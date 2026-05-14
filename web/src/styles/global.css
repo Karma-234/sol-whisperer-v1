@@ -1,0 +1,196 @@
+:root {
+  --font-display: "Avenir Next", "Gill Sans", "Trebuchet MS", sans-serif;
+  --font-body: "Avenir", "Segoe UI", sans-serif;
+  --bg-grad-1: #111b2e;
+  --bg-grad-2: #162a21;
+  --bg-grad-3: #302114;
+  --ink: #f4eee4;
+  --muted: #d2c9b8;
+  --card: rgba(22, 24, 30, 0.8);
+  --line: rgba(255, 255, 255, 0.12);
+  --p1: #ff4b3e;
+  --p2: #ff9a3d;
+  --p3: #48d3a6;
+  --p4: #9ea6b6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-body);
+  color: var(--ink);
+  background:
+    radial-gradient(80rem 80rem at 20% -20%, rgba(255, 95, 31, 0.2), transparent),
+    radial-gradient(70rem 70rem at 100% 0%, rgba(63, 224, 164, 0.15), transparent),
+    linear-gradient(140deg, var(--bg-grad-1), var(--bg-grad-2) 45%, var(--bg-grad-3));
+}
+
+.app-shell {
+  width: min(1120px, 92vw);
+  margin: 2rem auto;
+  display: grid;
+  gap: 1rem;
+}
+
+.hero {
+  border: 1px solid var(--line);
+  background: rgba(12, 14, 18, 0.65);
+  backdrop-filter: blur(14px);
+  border-radius: 20px;
+  padding: 1.4rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.hero h1 {
+  margin: 0.3rem 0;
+  font-family: var(--font-display);
+  letter-spacing: 0.02em;
+}
+
+.badge {
+  display: inline-block;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--muted);
+}
+
+.mode-toggle {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0.6rem 1rem;
+  cursor: pointer;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.tab {
+  border: 1px solid var(--line);
+  background: rgba(10, 12, 15, 0.5);
+  color: var(--muted);
+  border-radius: 12px;
+  padding: 0.55rem 0.9rem;
+  cursor: pointer;
+}
+
+.tab.active {
+  color: var(--ink);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.content {
+  display: grid;
+  gap: 1rem;
+}
+
+.risk-card {
+  border: 1px solid rgba(255, 145, 93, 0.45);
+  background: rgba(64, 36, 26, 0.58);
+  border-radius: 14px;
+  padding: 1rem;
+}
+
+.risk-card h2 {
+  margin-top: 0;
+}
+
+.feed-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.8rem;
+}
+
+.feed-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.9rem;
+  background: var(--card);
+  animation: rise 250ms ease-out;
+}
+
+.feed-card h3 {
+  margin: 0.55rem 0 0.35rem;
+}
+
+.feed-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.feed-card.p1 {
+  border-color: rgba(255, 75, 62, 0.8);
+  box-shadow: 0 0 0.9rem rgba(255, 75, 62, 0.28);
+}
+
+.feed-card.p2 {
+  border-color: rgba(255, 154, 61, 0.8);
+}
+
+.feed-card.p3 {
+  border-color: rgba(72, 211, 166, 0.75);
+}
+
+.feed-card.p4 {
+  border-color: rgba(158, 166, 182, 0.65);
+}
+
+.priority-pill {
+  font-size: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+}
+
+.placeholder {
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  padding: 1.1rem;
+}
+
+.theme-light {
+  --bg-grad-1: #f9f5ee;
+  --bg-grad-2: #e8f2ea;
+  --bg-grad-3: #f8e7dc;
+  --ink: #1a1f27;
+  --muted: #49515f;
+  --card: rgba(255, 255, 255, 0.8);
+  --line: rgba(20, 24, 30, 0.18);
+}
+
+@keyframes rise {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@media (max-width: 700px) {
+  .hero {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.9rem;
+  }
+}
