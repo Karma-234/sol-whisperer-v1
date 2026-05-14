@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"sol-whisperer-v1/internal/ws"
+	"github.karma-234/sol-whisperer-v1/internal/ws"
 )
 
 func TestPriorityQueue_PersonalBypassAndPriorityOrder(t *testing.T) {

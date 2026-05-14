@@ -33,21 +33,26 @@ Step 1 bootstrap: project structure and backend foundation (config, store, auth,
 ## Checkpoint 2026-05-14 Dependency Security Review
 
 ### Current Task
+
 Validate pinned dependency versions against current vulnerability/advisory feeds before installing anything.
 
 ### Progress Summary
+
 - Queried OSV batch API for planned Go and npm dependencies.
 - Found advisories affecting pinned versions of Fiber (`v2.52.5`), JWT (`v5.2.1`), and Vite (`v6.0.1`).
 - Verified latest upstream versions for all planned dependencies.
 
 ### Key Decisions
+
 - Do not install dependencies until version pins are updated to safer versions.
 - Prefer patched/latest stable versions where advisories have known fixed ranges.
 
 ### Open Questions
+
 - For Vite, should we jump to latest major (`8.x`) immediately or pin to a narrower vetted range based on frontend compatibility constraints?
 
 ### Next Steps
+
 - Update Go and web dependency pins to patched/latest versions.
 - Re-run advisory checks after pin updates.
 - Continue implementation only after the dependency baseline is security-reviewed.

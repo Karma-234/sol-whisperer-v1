@@ -8,7 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"sol-whisperer-v1/internal/snipe"
+	"github.karma-234/sol-whisperer-v1/internal/snipe"
 )
 
 func TestJitoService_DryRunSubmit(t *testing.T) {

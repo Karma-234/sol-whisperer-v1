@@ -1,5 +1,4 @@
 package main
-package main
 
 import (
 	"context"
@@ -14,13 +13,13 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"sol-whisperer-v1/internal/auth"
-	"sol-whisperer-v1/internal/config"
-	"sol-whisperer-v1/internal/notification"
-	"sol-whisperer-v1/internal/rpc"
-	"sol-whisperer-v1/internal/snipe"
-	"sol-whisperer-v1/internal/store"
-	"sol-whisperer-v1/internal/ws"
+	"github.karma-234/sol-whisperer-v1/internal/auth"
+	"github.karma-234/sol-whisperer-v1/internal/config"
+	"github.karma-234/sol-whisperer-v1/internal/notification"
+	"github.karma-234/sol-whisperer-v1/internal/rpc"
+	"github.karma-234/sol-whisperer-v1/internal/snipe"
+	"github.karma-234/sol-whisperer-v1/internal/store"
+	"github.karma-234/sol-whisperer-v1/internal/ws"
 )
 
 func main() {
@@ -93,9 +92,9 @@ func main() {
 		// This endpoint exists to validate base wiring for auth/rpc/notifier/service lifecycles.
 		// Returning light-weight metadata helps frontend integration before feature-complete APIs exist.
 		return c.JSON(fiber.Map{
-			"jwt":            jwtManager.Algorithm(),
-			"rpcTierAReady":  rpcManager.HasTier(rpc.TierA),
-			"rpcTierBReady":  rpcManager.HasTier(rpc.TierB),
+			"jwt":             jwtManager.Algorithm(),
+			"rpcTierAReady":   rpcManager.HasTier(rpc.TierA),
+			"rpcTierBReady":   rpcManager.HasTier(rpc.TierB),
 			"telegramEnabled": telegramNotifier.Enabled(),
 			"jitoEnabled":     jitoService.Enabled(),
 			"dryRun":          jitoService.DryRun(),

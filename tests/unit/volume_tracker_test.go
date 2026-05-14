@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"sol-whisperer-v1/internal/volume"
+	"github.karma-234/sol-whisperer-v1/internal/volume"
 )
 
 func TestTracker_DetectsSpikeWithOrganicWallets(t *testing.T) {
