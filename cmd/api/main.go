@@ -51,6 +51,7 @@ func main() {
 	}()
 
 	jwtManager := auth.NewJWTManager(cfg.Security.JWTSecret, 24*time.Hour)
+	telegramAuth := auth.NewTelegramAuth(cfg.Telegram.BotToken, 24*time.Hour)
 	rpcManager := rpc.NewTierManager(rpc.Config{
 		TierARPC: cfg.RPC.TierARPC,
 		TierAWS:  cfg.RPC.TierAWS,
@@ -76,11 +77,11 @@ func main() {
 
 	hub := ws.NewHub(logger, 256)
 	listenerRegistry := listener.NewRegistry()
-	if activeMints, listErr := sqliteStore.ListActiveListenerMints(ctx); listErr != nil {
-		logger.Warn().Err(listErr).Msg("failed to preload active listener mints")
+	if activeListeners, listErr := sqliteStore.ListActiveListeners(ctx); listErr != nil {
+		logger.Warn().Err(listErr).Msg("failed to preload active listeners")
 	} else {
-		for _, mint := range activeMints {
-			listenerRegistry.AddWatch("bootstrap", mint)
+		for _, rec := range activeListeners {
+			listenerRegistry.AddWatch(rec.UserID, rec.Mint)
 		}
 	}
 
@@ -88,11 +89,10 @@ func main() {
 	pumpClient := pumpdev.NewClient(cfg.PumpDev.WSURL, logger)
 	processor := volume.NewProcessor(tracker, sqliteStore, func(spike volume.SpikeResult) {
 		hasListener := listenerRegistry.HasWatchers(spike.Mint)
-		msgPriority := ws.PriorityP3Normal
+		broadcastPriority := ws.PriorityP3Normal
 		notifyPriority := notification.PriorityNormal
 		rpcTier := rpc.TierB
 		if hasListener {
-			msgPriority = ws.PriorityP2High
 			notifyPriority = notification.PriorityHigh
 			rpcTier = rpc.TierA
 		}
@@ -110,7 +110,7 @@ func main() {
 			"baselinePer5mSOL": spike.BaselinePer5mSOL,
 			"uniqueWallets":    spike.UniqueWallets,
 			"detectedAt":       spike.DetectedAt,
-			"priority":         fmt.Sprintf("P%d", msgPriority),
+			"priority":         fmt.Sprintf("P%d", broadcastPriority),
 			"tier":             string(rpcTier),
 			"rpcEndpoint":      rpcEndpoint,
 		})
@@ -119,7 +119,26 @@ func main() {
 			return
 		}
 
-		hub.Broadcast(ws.Message{Priority: msgPriority, Payload: payload})
+		hub.Broadcast(ws.Message{Priority: broadcastPriority, Payload: payload})
+		if hasListener {
+			personalPayload, perr := json.Marshal(fiber.Map{
+				"type":             "personal_listener_spike",
+				"mint":             spike.Mint,
+				"ratio":            spike.Ratio,
+				"windowVolumeSOL":  spike.WindowVolumeSOL,
+				"baselinePer5mSOL": spike.BaselinePer5mSOL,
+				"uniqueWallets":    spike.UniqueWallets,
+				"detectedAt":       spike.DetectedAt,
+				"priority":         "P1",
+				"tier":             string(rpcTier),
+				"rpcEndpoint":      rpcEndpoint,
+			})
+			if perr == nil {
+				for _, userID := range listenerRegistry.UsersForMint(spike.Mint) {
+					hub.EnqueueForUser(userID, ws.Message{Priority: ws.PriorityP1Critical, Personal: true, Payload: personalPayload, MaxRetries: 3})
+				}
+			}
+		}
 		if notifyErr := telegramNotifier.Send(ctx, "", "Volume spike detected for mint: "+spike.Mint, notifyPriority); notifyErr != nil {
 			logger.Warn().Err(notifyErr).Msg("telegram spike notification failed")
 		}
@@ -140,6 +159,14 @@ func main() {
 	app := fiber.New(fiber.Config{
 		AppName:               "sol-whisperer-v1",
 		DisableStartupMessage: true,
+	})
+
+	ws.RegisterRoutes(app, hub, logger, func(initData string) (string, error) {
+		identity, err := telegramAuth.VerifyWebAppInitData(initData)
+		if err != nil {
+			return "", err
+		}
+		return identity.UserID, nil
 	})
 
 	app.Get("/healthz", func(c *fiber.Ctx) error {
@@ -179,12 +206,19 @@ func main() {
 	})
 
 	app.Get("/api/v1/listeners/active", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"mints": listenerRegistry.ActiveMints()})
+		identity, err := telegramIdentityFromRequest(c, telegramAuth)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "telegram authentication required"})
+		}
+		mints, qErr := sqliteStore.ListUserListenerMints(c.UserContext(), identity.UserID)
+		if qErr != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load listeners"})
+		}
+		return c.JSON(fiber.Map{"userId": identity.UserID, "mints": mints})
 	})
 
 	app.Post("/api/v1/listeners/watch", func(c *fiber.Ctx) error {
 		var req struct {
-			UserID           string `json:"userId"`
 			Mint             string `json:"mint"`
 			Symbol           string `json:"symbol"`
 			AutoSnipeEnabled bool   `json:"autoSnipeEnabled"`
@@ -192,15 +226,18 @@ func main() {
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 		}
-		req.UserID = strings.TrimSpace(req.UserID)
+		identity, authErr := telegramIdentityFromRequest(c, telegramAuth)
+		if authErr != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "telegram authentication required"})
+		}
 		req.Mint = strings.TrimSpace(req.Mint)
-		if req.UserID == "" || req.Mint == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "userId and mint are required"})
+		if req.Mint == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "mint is required"})
 		}
 
 		rec := store.ListenerRecord{
 			ID:               fmt.Sprintf("lis-%d", time.Now().UTC().UnixNano()),
-			UserID:           req.UserID,
+			UserID:           identity.UserID,
 			Mint:             req.Mint,
 			Symbol:           strings.TrimSpace(req.Symbol),
 			AutoSnipeEnabled: req.AutoSnipeEnabled,
@@ -209,7 +246,7 @@ func main() {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to persist listener"})
 		}
 
-		listenerRegistry.AddWatch(req.UserID, req.Mint)
+		listenerRegistry.AddWatch(identity.UserID, req.Mint)
 		tier := rpcManager.ChooseTierForToken(true)
 		rpcEndpoint, rpcErr := rpcManager.NextRPC(tier)
 		if rpcErr != nil {
@@ -218,7 +255,7 @@ func main() {
 
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 			"status":      "watching",
-			"userId":      req.UserID,
+			"userId":      identity.UserID,
 			"mint":        req.Mint,
 			"tier":        string(tier),
 			"rpcEndpoint": rpcEndpoint,
@@ -227,23 +264,25 @@ func main() {
 
 	app.Delete("/api/v1/listeners/watch", func(c *fiber.Ctx) error {
 		var req struct {
-			UserID string `json:"userId"`
-			Mint   string `json:"mint"`
+			Mint string `json:"mint"`
 		}
 		if err := c.BodyParser(&req); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 		}
-		req.UserID = strings.TrimSpace(req.UserID)
+		identity, authErr := telegramIdentityFromRequest(c, telegramAuth)
+		if authErr != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "telegram authentication required"})
+		}
 		req.Mint = strings.TrimSpace(req.Mint)
-		if req.UserID == "" || req.Mint == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "userId and mint are required"})
+		if req.Mint == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "mint is required"})
 		}
 
-		if err := sqliteStore.DeleteListener(c.UserContext(), req.UserID, req.Mint); err != nil {
+		if err := sqliteStore.DeleteListener(c.UserContext(), identity.UserID, req.Mint); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete listener"})
 		}
-		listenerRegistry.RemoveWatch(req.UserID, req.Mint)
-		return c.JSON(fiber.Map{"status": "removed", "userId": req.UserID, "mint": req.Mint})
+		listenerRegistry.RemoveWatch(identity.UserID, req.Mint)
+		return c.JSON(fiber.Map{"status": "removed", "userId": identity.UserID, "mint": req.Mint})
 	})
 
 	errCh := make(chan error, 1)
@@ -307,4 +346,18 @@ func fanInEvents(ctx context.Context, channels ...<-chan pumpdev.Event) <-chan p
 	}()
 
 	return out
+}
+
+func telegramIdentityFromRequest(c *fiber.Ctx, verifier *auth.TelegramAuth) (auth.TelegramIdentity, error) {
+	if verifier == nil {
+		return auth.TelegramIdentity{}, errors.New("telegram verifier not configured")
+	}
+	initData := strings.TrimSpace(c.Get("X-Telegram-Init-Data"))
+	if initData == "" {
+		initData = strings.TrimSpace(c.Query("tgInitData"))
+	}
+	if initData == "" {
+		return auth.TelegramIdentity{}, errors.New("telegram init data missing")
+	}
+	return verifier.VerifyWebAppInitData(initData)
 }

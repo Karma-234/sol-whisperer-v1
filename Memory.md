@@ -184,3 +184,84 @@ Implement listener-aware routing so watched mints prefer Tier A and receive high
 - Implement websocket connection endpoint and client registration lifecycle on Hub.
 - Add per-user scoped fanout so personal events bypass global queue as P1.
 - Start integrating real PumpDev websocket subscription + reconnection/backoff.
+
+## Checkpoint 2026-05-14 WS Endpoint + Personal P1 Path
+
+### Current Task
+
+Implement real websocket stream endpoint and bind per-user client lifecycle into Hub with personal high-priority delivery.
+
+### Progress Summary
+
+- Security checked `github.com/gofiber/websocket/v2@v2.2.1` (OSV advisory count: 0) before adding dependency.
+- Added websocket endpoint registration in `internal/ws/server.go`:
+  - `GET /ws/stream?userId=<id>`
+  - per-connection hub registration
+  - queue-drain writer loop
+  - heartbeat emission (`P4`)
+  - graceful cleanup on disconnect.
+- Extended `internal/ws/hub.go` with user-scoped client indexes and `EnqueueForUser`.
+- Extended listener registry with `UsersForMint` for per-user fanout.
+- Updated spike routing in `cmd/api/main.go`:
+  - general spike broadcast stays `P3`
+  - watched-mint personal spike fanout now emits `P1` with `Personal=true` via `EnqueueForUser`.
+- Improved startup preload by loading full active listeners (`user_id + mint`) from SQLite.
+- Added/updated unit tests:
+  - `tests/unit/ws_hub_test.go`
+  - `tests/unit/listener_registry_test.go`.
+- Ran `go mod tidy`, `gofmt`, and `go test ./...` (all passing).
+
+### Key Decisions
+
+- Keep websocket auth lightweight for now (`userId` query param) so frontend integration can start immediately; JWT handshake hardening is next.
+- Preserve queue semantics by keeping all WS delivery flowing through per-client `PriorityQueue`.
+
+### Open Questions
+
+- Should websocket connect require JWT immediately (`Authorization` header or signed query token)?
+- Should personal fanout include additional P2 pre-spike/migration events from the same route now or after PumpDev full integration?
+
+### Next Steps
+
+- Add JWT-authenticated websocket handshake and map token subject to user-bound client sessions.
+- Integrate real PumpDev websocket parser/reconnect and route enrichment (pump.fun + raydium logs).
+- Wire frontend live feed to `/ws/stream` and render P1/P2/P3/P4 with distinct UI treatment.
+
+## Checkpoint 2026-05-14 Telegram Auth Migration
+
+### Current Task
+
+Switch identity/auth to Telegram WebApp init-data verification for websocket and listener APIs.
+
+### Progress Summary
+
+- Added Telegram verifier in `internal/auth/telegram.go`:
+  - signature verification using Telegram WebApp HMAC scheme,
+  - `auth_date` freshness check,
+  - user identity extraction from `user` payload.
+- Updated websocket auth flow in `internal/ws/server.go`:
+  - replaced open `userId` query trust,
+  - now requires `tgInitData` and verifies server-side before connection registration.
+- Updated HTTP listener routes in `cmd/api/main.go`:
+  - `POST/DELETE /api/v1/listeners/watch` now derive `userId` from Telegram init-data,
+  - `GET /api/v1/listeners/active` now returns mints for authenticated Telegram user only.
+- Added store helper `ListUserListenerMints` for authenticated listener listing.
+- Updated config validation (`internal/config/config.go`) to require `TELEGRAM_BOT_TOKEN` for Telegram-auth mode.
+- Updated `.env.example` default to `TELEGRAM_ENABLED=true` and documented token requirement.
+- Ran `gofmt` and `go test ./...` successfully.
+
+### Key Decisions
+
+- Treat Telegram as source-of-truth for user identity in this phase.
+- Keep JWT utility code for compatibility/future expansion but no longer rely on it for listener/ws identity.
+
+### Open Questions
+
+- Should Telegram init-data be accepted only via header for HTTP routes (and disallow query fallback)?
+- What max age should be enforced for Telegram init-data in production (`24h` currently)?
+
+### Next Steps
+
+- Add explicit frontend handshake utilities for generating/sending Telegram init-data to ws/http endpoints.
+- Integrate real PumpDev websocket parser/reconnect and route enrichment.
+- Add websocket command channel for user-specific controls (subscribe/unsubscribe from UI without reconnect).

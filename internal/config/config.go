@@ -113,17 +113,14 @@ func Load() (Config, error) {
 }
 
 func (c Config) validate() error {
-	if c.Security.JWTSecret == "" {
-		return errors.New("JWT_SECRET is required")
-	}
 	if len(c.RPC.TierARPC) == 0 || len(c.RPC.TierAWS) == 0 {
 		return errors.New("SOLANA_RPC_TIER_A and SOLANA_WS_TIER_A must have at least one endpoint")
 	}
 	if len(c.RPC.TierBRPC) == 0 || len(c.RPC.TierBWS) == 0 {
 		return errors.New("SOLANA_RPC_TIER_B and SOLANA_WS_TIER_B must have at least one endpoint")
 	}
-	if c.Telegram.Enabled && c.Telegram.BotToken == "" {
-		return errors.New("TELEGRAM_BOT_TOKEN is required when TELEGRAM_ENABLED=true")
+	if c.Telegram.BotToken == "" {
+		return errors.New("TELEGRAM_BOT_TOKEN is required because authentication is Telegram-based")
 	}
 	if c.Jito.Enabled && !c.Sniping.DryRun && c.Jito.BlockEngineURL == "" {
 		return errors.New("JITO_BLOCK_ENGINE_URL is required when JITO_ENABLED=true and SNIPE_DRY_RUN=false")

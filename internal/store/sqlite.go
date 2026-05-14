@@ -249,3 +249,55 @@ func (s *SQLiteStore) ListActiveListenerMints(ctx context.Context) ([]string, er
 	}
 	return out, nil
 }
+
+func (s *SQLiteStore) ListActiveListeners(ctx context.Context) ([]ListenerRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, user_id, mint, COALESCE(symbol, ''), auto_snipe_enabled
+FROM listeners
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query active listeners: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ListenerRecord, 0, 128)
+	for rows.Next() {
+		var r ListenerRecord
+		var auto int
+		if scanErr := rows.Scan(&r.ID, &r.UserID, &r.Mint, &r.Symbol, &auto); scanErr != nil {
+			return nil, fmt.Errorf("scan active listener: %w", scanErr)
+		}
+		r.AutoSnipeEnabled = auto == 1
+		out = append(out, r)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("iterate active listeners: %w", rowsErr)
+	}
+	return out, nil
+}
+
+func (s *SQLiteStore) ListUserListenerMints(ctx context.Context, userID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT mint
+FROM listeners
+WHERE user_id = ?
+ORDER BY updated_at DESC
+`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query user listener mints: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, 64)
+	for rows.Next() {
+		var mint string
+		if scanErr := rows.Scan(&mint); scanErr != nil {
+			return nil, fmt.Errorf("scan user listener mint: %w", scanErr)
+		}
+		out = append(out, mint)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("iterate user listener mints: %w", rowsErr)
+	}
+	return out, nil
+}

@@ -19,21 +19,29 @@ type Client struct {
 }
 
 type Hub struct {
-	mu       sync.RWMutex
-	clients  map[ClientID]*Client
-	retryCap int
-	logger   zerolog.Logger
+	mu          sync.RWMutex
+	clients     map[ClientID]*Client
+	clientUsers map[ClientID]string
+	userClients map[string]map[ClientID]struct{}
+	retryCap    int
+	logger      zerolog.Logger
 }
 
 func NewHub(logger zerolog.Logger, retryCap int) *Hub {
 	return &Hub{
-		clients:  make(map[ClientID]*Client),
-		retryCap: retryCap,
-		logger:   logger.With().Str("component", "ws.hub").Logger(),
+		clients:     make(map[ClientID]*Client),
+		clientUsers: make(map[ClientID]string),
+		userClients: make(map[string]map[ClientID]struct{}),
+		retryCap:    retryCap,
+		logger:      logger.With().Str("component", "ws.hub").Logger(),
 	}
 }
 
 func (h *Hub) AddClient(id ClientID, rateLimitPerS int) *Client {
+	return h.AddClientForUser(id, "", rateLimitPerS)
+}
+
+func (h *Hub) AddClientForUser(id ClientID, userID string, rateLimitPerS int) *Client {
 	if rateLimitPerS <= 0 {
 		rateLimitPerS = 20
 	}
@@ -46,6 +54,13 @@ func (h *Hub) AddClient(id ClientID, rateLimitPerS int) *Client {
 	}
 	h.mu.Lock()
 	h.clients[id] = c
+	if userID != "" {
+		h.clientUsers[id] = userID
+		if _, ok := h.userClients[userID]; !ok {
+			h.userClients[userID] = make(map[ClientID]struct{})
+		}
+		h.userClients[userID][id] = struct{}{}
+	}
 	h.mu.Unlock()
 	return c
 }
@@ -56,7 +71,38 @@ func (h *Hub) RemoveClient(id ClientID) {
 	if c, ok := h.clients[id]; ok {
 		c.Queue.Close()
 		delete(h.clients, id)
+		if userID, userOK := h.clientUsers[id]; userOK {
+			delete(h.clientUsers, id)
+			if set, ok := h.userClients[userID]; ok {
+				delete(set, id)
+				if len(set) == 0 {
+					delete(h.userClients, userID)
+				}
+			}
+		}
 	}
+}
+
+func (h *Hub) EnqueueForUser(userID string, msg Message) int {
+	h.mu.RLock()
+	idsSet, ok := h.userClients[userID]
+	if !ok {
+		h.mu.RUnlock()
+		return 0
+	}
+	ids := make([]ClientID, 0, len(idsSet))
+	for id := range idsSet {
+		ids = append(ids, id)
+	}
+	h.mu.RUnlock()
+
+	delivered := 0
+	for _, id := range ids {
+		if h.EnqueueForClient(id, msg) {
+			delivered++
+		}
+	}
+	return delivered
 }
 
 func (h *Hub) EnqueueForClient(id ClientID, msg Message) bool {
