@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 
 	"github.karma-234/sol-whisperer-v1/internal/auth"
 	"github.karma-234/sol-whisperer-v1/internal/config"
+	"github.karma-234/sol-whisperer-v1/internal/listener"
 	"github.karma-234/sol-whisperer-v1/internal/notification"
 	"github.karma-234/sol-whisperer-v1/internal/pumpdev"
 	"github.karma-234/sol-whisperer-v1/internal/rpc"
@@ -72,10 +75,33 @@ func main() {
 	})
 
 	hub := ws.NewHub(logger, 256)
+	listenerRegistry := listener.NewRegistry()
+	if activeMints, listErr := sqliteStore.ListActiveListenerMints(ctx); listErr != nil {
+		logger.Warn().Err(listErr).Msg("failed to preload active listener mints")
+	} else {
+		for _, mint := range activeMints {
+			listenerRegistry.AddWatch("bootstrap", mint)
+		}
+	}
 
 	tracker := volume.NewTracker(2.0, 5)
 	pumpClient := pumpdev.NewClient(cfg.PumpDev.WSURL, logger)
 	processor := volume.NewProcessor(tracker, sqliteStore, func(spike volume.SpikeResult) {
+		hasListener := listenerRegistry.HasWatchers(spike.Mint)
+		msgPriority := ws.PriorityP3Normal
+		notifyPriority := notification.PriorityNormal
+		rpcTier := rpc.TierB
+		if hasListener {
+			msgPriority = ws.PriorityP2High
+			notifyPriority = notification.PriorityHigh
+			rpcTier = rpc.TierA
+		}
+
+		rpcEndpoint, rpcErr := rpcManager.NextRPC(rpcTier)
+		if rpcErr != nil {
+			rpcEndpoint = ""
+		}
+
 		payload, marshalErr := json.Marshal(fiber.Map{
 			"type":             "volume_spike",
 			"mint":             spike.Mint,
@@ -84,14 +110,17 @@ func main() {
 			"baselinePer5mSOL": spike.BaselinePer5mSOL,
 			"uniqueWallets":    spike.UniqueWallets,
 			"detectedAt":       spike.DetectedAt,
+			"priority":         fmt.Sprintf("P%d", msgPriority),
+			"tier":             string(rpcTier),
+			"rpcEndpoint":      rpcEndpoint,
 		})
 		if marshalErr != nil {
 			logger.Error().Err(marshalErr).Msg("failed to marshal spike websocket payload")
 			return
 		}
 
-		hub.Broadcast(ws.Message{Priority: ws.PriorityP3Normal, Payload: payload})
-		if notifyErr := telegramNotifier.Send(ctx, "", "Volume spike detected for mint: "+spike.Mint, notification.PriorityNormal); notifyErr != nil {
+		hub.Broadcast(ws.Message{Priority: msgPriority, Payload: payload})
+		if notifyErr := telegramNotifier.Send(ctx, "", "Volume spike detected for mint: "+spike.Mint, notifyPriority); notifyErr != nil {
 			logger.Warn().Err(notifyErr).Msg("telegram spike notification failed")
 		}
 	}, logger, volume.ProcessorConfig{MinSpikeEmitInterval: 20 * time.Second})
@@ -147,6 +176,74 @@ func main() {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load spikes"})
 		}
 		return c.JSON(fiber.Map{"items": recent})
+	})
+
+	app.Get("/api/v1/listeners/active", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"mints": listenerRegistry.ActiveMints()})
+	})
+
+	app.Post("/api/v1/listeners/watch", func(c *fiber.Ctx) error {
+		var req struct {
+			UserID           string `json:"userId"`
+			Mint             string `json:"mint"`
+			Symbol           string `json:"symbol"`
+			AutoSnipeEnabled bool   `json:"autoSnipeEnabled"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+		req.UserID = strings.TrimSpace(req.UserID)
+		req.Mint = strings.TrimSpace(req.Mint)
+		if req.UserID == "" || req.Mint == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "userId and mint are required"})
+		}
+
+		rec := store.ListenerRecord{
+			ID:               fmt.Sprintf("lis-%d", time.Now().UTC().UnixNano()),
+			UserID:           req.UserID,
+			Mint:             req.Mint,
+			Symbol:           strings.TrimSpace(req.Symbol),
+			AutoSnipeEnabled: req.AutoSnipeEnabled,
+		}
+		if err := sqliteStore.UpsertListener(c.UserContext(), rec); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to persist listener"})
+		}
+
+		listenerRegistry.AddWatch(req.UserID, req.Mint)
+		tier := rpcManager.ChooseTierForToken(true)
+		rpcEndpoint, rpcErr := rpcManager.NextRPC(tier)
+		if rpcErr != nil {
+			rpcEndpoint = ""
+		}
+
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+			"status":      "watching",
+			"userId":      req.UserID,
+			"mint":        req.Mint,
+			"tier":        string(tier),
+			"rpcEndpoint": rpcEndpoint,
+		})
+	})
+
+	app.Delete("/api/v1/listeners/watch", func(c *fiber.Ctx) error {
+		var req struct {
+			UserID string `json:"userId"`
+			Mint   string `json:"mint"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+		req.UserID = strings.TrimSpace(req.UserID)
+		req.Mint = strings.TrimSpace(req.Mint)
+		if req.UserID == "" || req.Mint == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "userId and mint are required"})
+		}
+
+		if err := sqliteStore.DeleteListener(c.UserContext(), req.UserID, req.Mint); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete listener"})
+		}
+		listenerRegistry.RemoveWatch(req.UserID, req.Mint)
+		return c.JSON(fiber.Map{"status": "removed", "userId": req.UserID, "mint": req.Mint})
 	})
 
 	errCh := make(chan error, 1)

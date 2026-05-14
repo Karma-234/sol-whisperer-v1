@@ -29,6 +29,14 @@ type SpikeEventRecord struct {
 	CreatedAt     time.Time
 }
 
+type ListenerRecord struct {
+	ID               string
+	UserID           string
+	Mint             string
+	Symbol           string
+	AutoSnipeEnabled bool
+}
+
 func NewSQLite(ctx context.Context, path string, logger zerolog.Logger) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create db directory: %w", err)
@@ -89,6 +97,9 @@ CREATE TABLE IF NOT EXISTS listeners (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_listeners_user_mint
+ON listeners(user_id, mint);
 
 CREATE TABLE IF NOT EXISTS sniping_configs (
   listener_id TEXT PRIMARY KEY,
@@ -186,4 +197,55 @@ LIMIT ?
 		return nil, fmt.Errorf("iterate spike event rows: %w", rowsErr)
 	}
 	return result, nil
+}
+
+func (s *SQLiteStore) UpsertListener(ctx context.Context, rec ListenerRecord) error {
+	const query = `
+INSERT INTO listeners (id, user_id, mint, symbol, auto_snipe_enabled, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT(user_id, mint) DO UPDATE SET
+  symbol = excluded.symbol,
+  auto_snipe_enabled = excluded.auto_snipe_enabled,
+  updated_at = CURRENT_TIMESTAMP
+`
+
+	auto := 0
+	if rec.AutoSnipeEnabled {
+		auto = 1
+	}
+	_, err := s.db.ExecContext(ctx, query, rec.ID, rec.UserID, rec.Mint, rec.Symbol, auto)
+	if err != nil {
+		return fmt.Errorf("upsert listener: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeleteListener(ctx context.Context, userID string, mint string) error {
+	const query = `DELETE FROM listeners WHERE user_id = ? AND mint = ?`
+	_, err := s.db.ExecContext(ctx, query, userID, mint)
+	if err != nil {
+		return fmt.Errorf("delete listener: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListActiveListenerMints(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT mint FROM listeners`)
+	if err != nil {
+		return nil, fmt.Errorf("query active listener mints: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, 64)
+	for rows.Next() {
+		var mint string
+		if scanErr := rows.Scan(&mint); scanErr != nil {
+			return nil, fmt.Errorf("scan active listener mint: %w", scanErr)
+		}
+		out = append(out, mint)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("iterate active listener mints: %w", rowsErr)
+	}
+	return out, nil
 }

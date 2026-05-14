@@ -146,3 +146,41 @@ Implement PumpDev ingestion pipeline with rolling volume persistence and spike e
 - Implement listener-aware routing so watched mints get Tier A preference and higher WS priority treatment.
 - Add real websocket endpoint(s) for dashboard clients and bind Hub client lifecycle management.
 - Replace PumpDev placeholder connect logic with actual upstream subscription and reconnection strategy.
+
+## Checkpoint 2026-05-14 Listener-Aware Routing
+
+### Current Task
+
+Implement listener-aware routing so watched mints prefer Tier A and receive higher-priority spike delivery.
+
+### Progress Summary
+
+- Added in-memory listener registry (`internal/listener/registry.go`) for fast watcher lookups.
+- Extended SQLite store with listener upsert/delete/list APIs and a unique `(user_id, mint)` index.
+- Preloaded active listener mints from SQLite on startup to preserve behavior after restart.
+- Updated spike callback routing in API bootstrap:
+  - watched mint spikes now use P2 + Tier A,
+  - unwatched mint spikes remain P3 + Tier B,
+  - payload now includes `priority`, `tier`, and selected `rpcEndpoint`.
+- Added listener management APIs:
+  - `GET /api/v1/listeners/active`
+  - `POST /api/v1/listeners/watch`
+  - `DELETE /api/v1/listeners/watch`
+- Added registry unit tests in `tests/unit/listener_registry_test.go`.
+- Ran `gofmt` and `go test ./...` successfully.
+
+### Key Decisions
+
+- Keep routing decision path in-memory for low latency; SQLite remains source-of-truth for restart recovery.
+- Use Tier A as soon as at least one user watches a mint.
+
+### Open Questions
+
+- Should watched-mint spikes escalate to P1 when auto-snipe is enabled for that listener?
+- Should we support per-user watch scopes in websocket fanout before broad broadcast refinement?
+
+### Next Steps
+
+- Implement websocket connection endpoint and client registration lifecycle on Hub.
+- Add per-user scoped fanout so personal events bypass global queue as P1.
+- Start integrating real PumpDev websocket subscription + reconnection/backoff.
