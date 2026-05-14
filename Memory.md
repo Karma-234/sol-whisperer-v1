@@ -27,6 +27,60 @@ Step 1 bootstrap: project structure and backend foundation (config, store, auth,
 
 - Finalize and compile backend foundational modules.
 - Add initial SQL migration files for listeners/events/snipe history.
+
+## Checkpoint 2026-05-14 Implementation Continuation
+
+### Current Task
+
+Continue implementation after dependency security gate: normalize module/imports, finish missing frontend scaffold, and validate build/test health.
+
+### Progress Summary
+
+- Updated Go dependency pins to safer versions and ran `go mod tidy`.
+- Aligned backend and test import paths to module `github.karma-234/sol-whisperer-v1`.
+- Created missing frontend files (`web/package.json`, Vite/TS config, app shell and CSS).
+- Installed npm dependencies and confirmed `npm audit` reports 0 vulnerabilities.
+- Fixed Fiber shutdown compatibility issue and validated with `go test ./...`.
+- Confirmed frontend compiles successfully with `npm run build`.
+
+### Key Decisions
+
+- Upgraded flagged dependencies: Fiber to `v2.52.13`, JWT to `v5.3.1`, and Vite to `v8.0.13`.
+- Kept dry-run-first safety posture and prominent risk warning in dashboard shell.
+
+### Open Questions
+
+- Decide whether to lock npm versions tighter (exact pins) versus caret ranges for patch/minor drift.
+- Select final free-tier RPC endpoint list for Tier A and Tier B defaults.
+
+### Next Steps
+
+- Implement PumpDev stream ingestion and persistence-backed volume snapshots.
+- Add listener orchestration that routes watched tokens to Tier A automatically.
+- Expose first websocket endpoint wiring Hub + PriorityQueue to real client sessions.
+
+## Checkpoint 2026-05-14 Post-Update Advisory Verification
+
+### Current Task
+
+Re-check upgraded dependency versions against OSV before proceeding further.
+
+### Progress Summary
+
+- Queried OSV `querybatch` for all upgraded Go and npm pins.
+- All queried upgraded versions returned `0` advisories.
+
+### Key Decisions
+
+- Security gate is satisfied for current dependency baseline; implementation can continue.
+
+### Open Questions
+
+- None for dependency security at this checkpoint.
+
+### Next Steps
+
+- Proceed with step-2 implementation: PumpDev websocket ingestion, rolling volume persistence, and spike event emission.
 - Add unit tests for WS priority queue and volume tracker baseline structures.
 - Scaffold frontend Vite + React baseline with themed CSS shell.
 

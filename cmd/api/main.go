@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -113,7 +114,7 @@ func main() {
 	case <-ctx.Done():
 		logger.Info().Msg("shutdown signal received")
 	case runErr := <-errCh:
-		if runErr != nil && !errors.Is(runErr, fiber.ErrServerClosed) {
+		if runErr != nil && !errors.Is(runErr, net.ErrClosed) {
 			logger.Fatal().Err(runErr).Msg("fiber server failed")
 		}
 	}

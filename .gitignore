@@ -41,6 +41,7 @@ docs
 # Build output
 bin/
 dist/
+*.tsbuildinfo
 
 # Database files
 *.db
