@@ -110,3 +110,39 @@ Validate pinned dependency versions against current vulnerability/advisory feeds
 - Update Go and web dependency pins to patched/latest versions.
 - Re-run advisory checks after pin updates.
 - Continue implementation only after the dependency baseline is security-reviewed.
+
+## Checkpoint 2026-05-14 Step-2 Volume Ingestion
+
+### Current Task
+
+Implement PumpDev ingestion pipeline with rolling volume persistence and spike emission hooks.
+
+### Progress Summary
+
+- Added persistent store support for `spike_events` plus write/read methods for snapshots and spikes.
+- Implemented `internal/volume/processor.go` to consume PumpDev events, evaluate spikes, persist snapshots, persist spikes, and invoke callbacks.
+- Extended PumpDev client with deterministic `MockStream` to keep development pipeline active before full external WS integration.
+- Wired processor startup into API bootstrap (`cmd/api/main.go`) with:
+	- background processing goroutine,
+	- websocket broadcast payload on detected spikes (P3),
+	- Telegram notification hook,
+	- `/api/v1/spikes/recent` endpoint backed by SQLite.
+- Added unit test coverage for processor behavior in `tests/unit/volume_processor_test.go`.
+- Ran `gofmt` and verified with `go test ./...` (all passing).
+
+### Key Decisions
+
+- Keep real PumpDev connect path in place while enabling mock event stream in non-production mode for fast integration testing.
+- Persist every processed 5-minute snapshot to favor recoverability and analytics over minimal write volume at this stage.
+- Apply per-mint spike emission throttle (`MinSpikeEmitInterval`) to reduce noisy duplicate alerts.
+
+### Open Questions
+
+- How aggressively should snapshot writes be downsampled (e.g., per mint every N seconds) once real throughput is connected?
+- Should general spikes stay P3 always, or escalate to P2 when a user has a listener on the same mint?
+
+### Next Steps
+
+- Implement listener-aware routing so watched mints get Tier A preference and higher WS priority treatment.
+- Add real websocket endpoint(s) for dashboard clients and bind Hub client lifecycle management.
+- Replace PumpDev placeholder connect logic with actual upstream subscription and reconnection strategy.

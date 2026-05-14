@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -17,9 +18,11 @@ import (
 	"github.karma-234/sol-whisperer-v1/internal/auth"
 	"github.karma-234/sol-whisperer-v1/internal/config"
 	"github.karma-234/sol-whisperer-v1/internal/notification"
+	"github.karma-234/sol-whisperer-v1/internal/pumpdev"
 	"github.karma-234/sol-whisperer-v1/internal/rpc"
 	"github.karma-234/sol-whisperer-v1/internal/snipe"
 	"github.karma-234/sol-whisperer-v1/internal/store"
+	"github.karma-234/sol-whisperer-v1/internal/volume"
 	"github.karma-234/sol-whisperer-v1/internal/ws"
 )
 
@@ -70,6 +73,41 @@ func main() {
 
 	hub := ws.NewHub(logger, 256)
 
+	tracker := volume.NewTracker(2.0, 5)
+	pumpClient := pumpdev.NewClient(cfg.PumpDev.WSURL, logger)
+	processor := volume.NewProcessor(tracker, sqliteStore, func(spike volume.SpikeResult) {
+		payload, marshalErr := json.Marshal(fiber.Map{
+			"type":             "volume_spike",
+			"mint":             spike.Mint,
+			"ratio":            spike.Ratio,
+			"windowVolumeSOL":  spike.WindowVolumeSOL,
+			"baselinePer5mSOL": spike.BaselinePer5mSOL,
+			"uniqueWallets":    spike.UniqueWallets,
+			"detectedAt":       spike.DetectedAt,
+		})
+		if marshalErr != nil {
+			logger.Error().Err(marshalErr).Msg("failed to marshal spike websocket payload")
+			return
+		}
+
+		hub.Broadcast(ws.Message{Priority: ws.PriorityP3Normal, Payload: payload})
+		if notifyErr := telegramNotifier.Send(ctx, "", "Volume spike detected for mint: "+spike.Mint, notification.PriorityNormal); notifyErr != nil {
+			logger.Warn().Err(notifyErr).Msg("telegram spike notification failed")
+		}
+	}, logger, volume.ProcessorConfig{MinSpikeEmitInterval: 20 * time.Second})
+
+	pumpEvents, pumpErrs := pumpClient.Connect(ctx)
+	if cfg.App.Env != "production" {
+		logger.Info().Msg("development mode: enabling PumpDev mock event stream")
+		pumpEvents = fanInEvents(ctx, pumpEvents, pumpClient.MockStream(ctx, 2*time.Second))
+	}
+
+	go func() {
+		if runErr := processor.Run(ctx, pumpEvents, pumpErrs); runErr != nil {
+			logger.Error().Err(runErr).Msg("volume processor stopped with error")
+		}
+	}()
+
 	app := fiber.New(fiber.Config{
 		AppName:               "sol-whisperer-v1",
 		DisableStartupMessage: true,
@@ -103,6 +141,14 @@ func main() {
 		})
 	})
 
+	app.Get("/api/v1/spikes/recent", func(c *fiber.Ctx) error {
+		recent, err := sqliteStore.GetRecentSpikeEvents(c.UserContext(), 100)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load spikes"})
+		}
+		return c.JSON(fiber.Map{"items": recent})
+	})
+
 	errCh := make(chan error, 1)
 	go func() {
 		addr := cfg.App.Host + ":" + cfg.App.Port
@@ -132,4 +178,36 @@ func newLogger() zerolog.Logger {
 	zerolog.TimeFieldFormat = time.RFC3339Nano
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 	return log.With().Str("service", "sol-whisperer-api").Logger()
+}
+
+func fanInEvents(ctx context.Context, channels ...<-chan pumpdev.Event) <-chan pumpdev.Event {
+	out := make(chan pumpdev.Event)
+
+	for _, ch := range channels {
+		stream := ch
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ev, ok := <-stream:
+					if !ok {
+						return
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case out <- ev:
+					}
+				}
+			}
+		}()
+	}
+
+	go func() {
+		<-ctx.Done()
+		close(out)
+	}()
+
+	return out
 }

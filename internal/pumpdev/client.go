@@ -3,6 +3,7 @@ package pumpdev
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -62,4 +63,42 @@ func (c *Client) Connect(ctx context.Context) (<-chan Event, <-chan error) {
 	}()
 
 	return events, errs
+}
+
+func (c *Client) MockStream(ctx context.Context, interval time.Duration) <-chan Event {
+	if interval <= 0 {
+		interval = 3 * time.Second
+	}
+
+	out := make(chan Event)
+	go func() {
+		defer close(out)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		walletCounter := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				walletCounter++
+				mint := "So11111111111111111111111111111111111111112"
+				if walletCounter%2 == 0 {
+					mint = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6v3wJQW9u69QyDmg"
+				}
+				out <- Event{
+					Mint:          mint,
+					Symbol:        "MEME",
+					VolumeSOL:     0.5 + float64(walletCounter%5),
+					TraderAddress: fmt.Sprintf("wallet-%d", walletCounter),
+					Program:       "pump.fun",
+					Timestamp:     now.UTC(),
+				}
+			}
+		}
+	}()
+
+	return out
 }
