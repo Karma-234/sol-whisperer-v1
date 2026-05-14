@@ -123,10 +123,10 @@ Implement PumpDev ingestion pipeline with rolling volume persistence and spike e
 - Implemented `internal/volume/processor.go` to consume PumpDev events, evaluate spikes, persist snapshots, persist spikes, and invoke callbacks.
 - Extended PumpDev client with deterministic `MockStream` to keep development pipeline active before full external WS integration.
 - Wired processor startup into API bootstrap (`cmd/api/main.go`) with:
-	- background processing goroutine,
-	- websocket broadcast payload on detected spikes (P3),
-	- Telegram notification hook,
-	- `/api/v1/spikes/recent` endpoint backed by SQLite.
+  - background processing goroutine,
+  - websocket broadcast payload on detected spikes (P3),
+  - Telegram notification hook,
+  - `/api/v1/spikes/recent` endpoint backed by SQLite.
 - Added unit test coverage for processor behavior in `tests/unit/volume_processor_test.go`.
 - Ran `gofmt` and verified with `go test ./...` (all passing).
 
