@@ -68,6 +68,33 @@ body {
   color: var(--muted);
 }
 
+.socket-pill {
+  margin: 0.6rem 0 0;
+  display: inline-block;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.socket-pill.connected {
+  border-color: rgba(72, 211, 166, 0.8);
+  color: #79e5bf;
+}
+
+.socket-pill.reconnecting,
+.socket-pill.connecting {
+  border-color: rgba(255, 154, 61, 0.8);
+  color: #ffc58f;
+}
+
+.socket-pill.error,
+.socket-pill.closed {
+  border-color: rgba(255, 75, 62, 0.8);
+  color: #ff9b92;
+}
+
 .mode-toggle {
   border: 1px solid var(--line);
   background: transparent;
@@ -164,6 +191,47 @@ body {
   border: 1px dashed var(--line);
   border-radius: 14px;
   padding: 1.1rem;
+}
+
+.listener-controls {
+  display: flex;
+  gap: 0.6rem;
+  margin: 0.6rem 0 1rem;
+}
+
+.listener-controls input {
+  flex: 1;
+  min-width: 12rem;
+  border: 1px solid var(--line);
+  background: rgba(10, 12, 15, 0.45);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+}
+
+.listener-controls button,
+.listener-row button {
+  border: 1px solid var(--line);
+  background: rgba(10, 12, 15, 0.7);
+  color: var(--ink);
+  border-radius: 10px;
+  padding: 0.5rem 0.8rem;
+  cursor: pointer;
+}
+
+.listener-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.listener-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.5rem 0.7rem;
+  align-items: center;
 }
 
 .theme-light {
