@@ -19,6 +19,16 @@ type SQLiteStore struct {
 	logger zerolog.Logger
 }
 
+type SpikeEventRecord struct {
+	ID            string
+	Mint          string
+	Ratio         float64
+	WindowVolume  float64
+	BaselinePer5m float64
+	UniqueWallets int
+	CreatedAt     time.Time
+}
+
 func NewSQLite(ctx context.Context, path string, logger zerolog.Logger) (*SQLiteStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create db directory: %w", err)
@@ -109,7 +119,71 @@ CREATE TABLE IF NOT EXISTS volume_snapshots (
   unique_wallets INTEGER NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS spike_events (
+  id TEXT PRIMARY KEY,
+  mint TEXT NOT NULL,
+  ratio REAL NOT NULL,
+  window_volume_sol REAL NOT NULL,
+  baseline_per5m_sol REAL NOT NULL,
+  unique_wallets INTEGER NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `
 	_, err := s.db.ExecContext(ctx, schema)
 	return err
+}
+
+func (s *SQLiteStore) InsertVolumeSnapshot(ctx context.Context, mint string, windowStart time.Time, windowEnd time.Time, volumeSOL float64, uniqueWallets int) error {
+	const query = `
+INSERT INTO volume_snapshots (mint, window_start, window_end, volume_sol, unique_wallets)
+VALUES (?, ?, ?, ?, ?)
+`
+	_, err := s.db.ExecContext(ctx, query, mint, windowStart.UTC(), windowEnd.UTC(), volumeSOL, uniqueWallets)
+	if err != nil {
+		return fmt.Errorf("insert volume snapshot: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) InsertSpikeEvent(ctx context.Context, rec SpikeEventRecord) error {
+	const query = `
+INSERT INTO spike_events (id, mint, ratio, window_volume_sol, baseline_per5m_sol, unique_wallets, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+`
+	_, err := s.db.ExecContext(ctx, query, rec.ID, rec.Mint, rec.Ratio, rec.WindowVolume, rec.BaselinePer5m, rec.UniqueWallets, rec.CreatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("insert spike event: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetRecentSpikeEvents(ctx context.Context, limit int) ([]SpikeEventRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, mint, ratio, window_volume_sol, baseline_per5m_sol, unique_wallets, created_at
+FROM spike_events
+ORDER BY created_at DESC
+LIMIT ?
+`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent spike events: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]SpikeEventRecord, 0, limit)
+	for rows.Next() {
+		var r SpikeEventRecord
+		if scanErr := rows.Scan(&r.ID, &r.Mint, &r.Ratio, &r.WindowVolume, &r.BaselinePer5m, &r.UniqueWallets, &r.CreatedAt); scanErr != nil {
+			return nil, fmt.Errorf("scan spike event row: %w", scanErr)
+		}
+		result = append(result, r)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("iterate spike event rows: %w", rowsErr)
+	}
+	return result, nil
 }
