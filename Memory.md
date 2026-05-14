@@ -265,3 +265,84 @@ Switch identity/auth to Telegram WebApp init-data verification for websocket and
 - Add explicit frontend handshake utilities for generating/sending Telegram init-data to ws/http endpoints.
 - Integrate real PumpDev websocket parser/reconnect and route enrichment.
 - Add websocket command channel for user-specific controls (subscribe/unsubscribe from UI without reconnect).
+
+## Checkpoint 2026-05-14 Frontend Telegram Handshake Wiring
+
+### Current Task
+
+Implement production-oriented frontend wiring so HTTP and websocket calls send Telegram init-data to authenticated backend routes.
+
+### Progress Summary
+
+- Added Telegram frontend utilities:
+  - `web/src/lib/telegram.ts` (session extraction + WebApp ready call)
+  - `web/src/types/telegram.d.ts` (typed Telegram WebApp globals)
+- Added authenticated API client in `web/src/lib/api.ts`:
+  - sends `X-Telegram-Init-Data` header for protected listener endpoints,
+  - supports listener add/remove/list and recent spikes load.
+- Added websocket client in `web/src/lib/ws.ts`:
+  - connects to `/ws/stream` with `tgInitData` query,
+  - parses live events and exposes error hook.
+- Updated app shell (`web/src/app/App.tsx`) to:
+  - load initial spikes + authenticated listeners,
+  - open live websocket stream,
+  - provide add/remove listener controls,
+  - surface Telegram-auth status/warnings.
+- Updated styling in `web/src/styles/global.css` for new listener controls.
+- Updated `.env.example` with Vite vars (`VITE_API_BASE_URL`, `VITE_TELEGRAM_INIT_DATA`) and usage notes.
+- Built frontend successfully with `npm run build`.
+
+### Key Decisions
+
+- Keep Telegram as sole auth path; no frontend dev bypass was introduced.
+- Allow env fallback (`VITE_TELEGRAM_INIT_DATA`) for controlled local testing only.
+
+### Open Questions
+
+- Should `VITE_TELEGRAM_INIT_DATA` be disallowed entirely when `APP_ENV=production` to prevent misuse?
+- Should listener management move from simple mint list to richer cards including sniping config state next?
+
+### Next Steps
+
+- Wire frontend websocket reconnect/backoff strategy and connection-state UI.
+- Implement real PumpDev parser/reconnect path in backend.
+- Add authenticated settings panel for Telegram user profile + notification preferences.
+
+## Checkpoint 2026-05-14 WS Reconnect + JWT Removal
+
+### Current Task
+
+Add frontend websocket reconnect/backoff and confirm Telegram-only auth by removing remaining JWT runtime/dependency usage.
+
+### Progress Summary
+
+- Implemented resilient websocket client in `web/src/lib/ws.ts`:
+  - auto reconnect with exponential backoff (capped),
+  - explicit socket status callbacks (`connecting`, `connected`, `reconnecting`, `error`, `closed`),
+  - clean shutdown controller.
+- Updated dashboard UI (`web/src/app/App.tsx`) to display live socket status and use the new socket controller.
+- Added status-pill styling in `web/src/styles/global.css`.
+- Removed JWT runtime path entirely:
+  - removed `jwtManager` usage from `cmd/api/main.go`,
+  - bootstrap now reports `authMode=telegram`.
+- Removed JWT config/secret usage:
+  - removed `SecurityConfig` from `internal/config/config.go`,
+  - removed `JWT_SECRET` from `.env.example`.
+- Deleted legacy JWT implementation file `internal/auth/jwt.go`.
+- Ran `go mod tidy`, `go test ./...`, and frontend `npm run build` successfully.
+
+### Key Decisions
+
+- Keep Telegram as the single authentication mechanism for user-bound routes and websocket sessions.
+- Keep frontend env fallback for Telegram init-data as local testing aid only.
+
+### Open Questions
+
+- Should we hard-fail app startup if `VITE_TELEGRAM_INIT_DATA` is set in production frontend builds?
+- Should backend reject `tgInitData` query on HTTP routes and allow header-only for stricter handling?
+
+### Next Steps
+
+- Implement PumpDev real websocket parsing + reconnect/backoff on backend source client.
+- Add frontend connection diagnostics panel (latency, reconnect attempts, last message time).
+- Continue toward end-to-end production hardening (Docker/README/final deployment flow).

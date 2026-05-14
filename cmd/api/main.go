@@ -50,7 +50,6 @@ func main() {
 		}
 	}()
 
-	jwtManager := auth.NewJWTManager(cfg.Security.JWTSecret, 24*time.Hour)
 	telegramAuth := auth.NewTelegramAuth(cfg.Telegram.BotToken, 24*time.Hour)
 	rpcManager := rpc.NewTierManager(rpc.Config{
 		TierARPC: cfg.RPC.TierARPC,
@@ -187,7 +186,7 @@ func main() {
 		// This endpoint exists to validate base wiring for auth/rpc/notifier/service lifecycles.
 		// Returning light-weight metadata helps frontend integration before feature-complete APIs exist.
 		return c.JSON(fiber.Map{
-			"jwt":             jwtManager.Algorithm(),
+			"authMode":        "telegram",
 			"rpcTierAReady":   rpcManager.HasTier(rpc.TierA),
 			"rpcTierBReady":   rpcManager.HasTier(rpc.TierB),
 			"telegramEnabled": telegramNotifier.Enabled(),

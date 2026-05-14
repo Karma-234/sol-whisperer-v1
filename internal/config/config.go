@@ -13,7 +13,6 @@ import (
 // Strong typing prevents silent misconfiguration in financial workflows.
 type Config struct {
 	App      AppConfig
-	Security SecurityConfig
 	Database DatabaseConfig
 	RPC      RPCConfig
 	PumpDev  PumpDevConfig
@@ -26,10 +25,6 @@ type AppConfig struct {
 	Env  string
 	Host string
 	Port string
-}
-
-type SecurityConfig struct {
-	JWTSecret string
 }
 
 type DatabaseConfig struct {
@@ -74,9 +69,6 @@ func Load() (Config, error) {
 			Env:  getEnv("APP_ENV", "development"),
 			Host: getEnv("APP_HOST", "0.0.0.0"),
 			Port: getEnv("APP_PORT", "8080"),
-		},
-		Security: SecurityConfig{
-			JWTSecret: getEnv("JWT_SECRET", ""),
 		},
 		Database: DatabaseConfig{
 			SQLitePath: getEnv("SQLITE_PATH", "./data/solwhisperer.db"),
