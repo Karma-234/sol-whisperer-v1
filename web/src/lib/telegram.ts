@@ -21,5 +21,7 @@ export function getTelegramSession(): TelegramSession {
 }
 
 export function ensureTelegramReady(): void {
-  window.Telegram?.WebApp?.ready?.();
+  const webApp = window.Telegram?.WebApp;
+  webApp?.ready?.();
+  webApp?.expand?.();
 }

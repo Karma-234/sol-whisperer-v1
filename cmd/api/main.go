@@ -64,6 +64,15 @@ func main() {
 		HTTPClient:    &http.Client{Timeout: 8 * time.Second},
 		Logger:        logger,
 	})
+	if cfg.Telegram.WebAppURL != "" {
+		setupCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		if menuErr := telegramNotifier.ConfigureWebAppMenu(setupCtx, cfg.Telegram.WebAppURL, cfg.Telegram.WebAppButtonText); menuErr != nil {
+			logger.Warn().Err(menuErr).Msg("failed to configure telegram web app menu button")
+		} else {
+			logger.Info().Str("webAppURL", cfg.Telegram.WebAppURL).Msg("telegram web app menu button configured")
+		}
+		cancel()
+	}
 	jitoService := snipe.NewJitoService(snipe.Config{
 		Enabled:        cfg.Jito.Enabled,
 		DryRun:         cfg.Sniping.DryRun,
@@ -84,7 +93,7 @@ func main() {
 		}
 	}
 
-	tracker := volume.NewTracker(2.0, 5)
+	tracker := volume.NewTracker(12.0, 5)
 	pumpClient := pumpdev.NewClient(cfg.PumpDev.WSURL, logger)
 	processor := volume.NewProcessor(tracker, sqliteStore, func(spike volume.SpikeResult) {
 		hasListener := listenerRegistry.HasWatchers(spike.Mint)
@@ -104,10 +113,18 @@ func main() {
 		payload, marshalErr := json.Marshal(fiber.Map{
 			"type":             "volume_spike",
 			"mint":             spike.Mint,
+			"name":             spike.Name,
+			"symbol":           spike.Symbol,
 			"ratio":            spike.Ratio,
 			"windowVolumeSOL":  spike.WindowVolumeSOL,
 			"baselinePer5mSOL": spike.BaselinePer5mSOL,
+			"marketCapSOL":     spike.MarketCapSOL,
 			"uniqueWallets":    spike.UniqueWallets,
+			"tokenCreatedAt":   spike.TokenCreatedAt,
+			"tokenAgeSeconds":  spike.TokenAgeSeconds,
+			"floorConfidence":  spike.FloorConfidence,
+			"entryScore":       spike.EntryScore,
+			"entryGrade":       spike.EntryGrade,
 			"detectedAt":       spike.DetectedAt,
 			"priority":         fmt.Sprintf("P%d", broadcastPriority),
 			"tier":             string(rpcTier),
@@ -123,10 +140,18 @@ func main() {
 			personalPayload, perr := json.Marshal(fiber.Map{
 				"type":             "personal_listener_spike",
 				"mint":             spike.Mint,
+				"name":             spike.Name,
+				"symbol":           spike.Symbol,
 				"ratio":            spike.Ratio,
 				"windowVolumeSOL":  spike.WindowVolumeSOL,
 				"baselinePer5mSOL": spike.BaselinePer5mSOL,
+				"marketCapSOL":     spike.MarketCapSOL,
 				"uniqueWallets":    spike.UniqueWallets,
+				"tokenCreatedAt":   spike.TokenCreatedAt,
+				"tokenAgeSeconds":  spike.TokenAgeSeconds,
+				"floorConfidence":  spike.FloorConfidence,
+				"entryScore":       spike.EntryScore,
+				"entryGrade":       spike.EntryGrade,
 				"detectedAt":       spike.DetectedAt,
 				"priority":         "P1",
 				"tier":             string(rpcTier),
@@ -138,19 +163,25 @@ func main() {
 				}
 			}
 		}
-		if notifyErr := telegramNotifier.Send(ctx, "", "Volume spike detected for mint: "+spike.Mint, notifyPriority); notifyErr != nil {
+		notificationMessage := "Volume spike detected for mint: " + spike.Mint
+		if hasListener {
+			for _, userID := range listenerRegistry.UsersForMint(spike.Mint) {
+				if notifyErr := telegramNotifier.Send(ctx, userID, notificationMessage, notifyPriority); notifyErr != nil {
+					logger.Warn().Err(notifyErr).Str("userId", userID).Msg("telegram personal spike notification failed")
+				}
+			}
+		} else if notifyErr := telegramNotifier.Send(ctx, "", notificationMessage, notifyPriority); notifyErr != nil {
 			logger.Warn().Err(notifyErr).Msg("telegram spike notification failed")
 		}
-	}, logger, volume.ProcessorConfig{MinSpikeEmitInterval: 20 * time.Second})
+	}, logger, volume.ProcessorConfig{MinSpikeEmitInterval: 20 * time.Second, TxDedupeWindow: 5 * time.Minute})
+
+	rpcWSClient := rpc.NewWSClient(rpcManager, logger)
 
 	pumpEvents, pumpErrs := pumpClient.Connect(ctx)
-	if cfg.App.Env != "production" {
-		logger.Info().Msg("development mode: enabling PumpDev mock event stream")
-		pumpEvents = fanInEvents(ctx, pumpEvents, pumpClient.MockStream(ctx, 2*time.Second))
-	}
+	rpcEvents, rpcErrs := rpcWSClient.Connect(ctx)
 
 	go func() {
-		if runErr := processor.Run(ctx, pumpEvents, pumpErrs); runErr != nil {
+		if runErr := processor.RunDual(ctx, pumpEvents, pumpErrs, rpcEvents, rpcErrs); runErr != nil {
 			logger.Error().Err(runErr).Msg("volume processor stopped with error")
 		}
 	}()
@@ -190,6 +221,7 @@ func main() {
 			"rpcTierAReady":   rpcManager.HasTier(rpc.TierA),
 			"rpcTierBReady":   rpcManager.HasTier(rpc.TierB),
 			"telegramEnabled": telegramNotifier.Enabled(),
+			"telegramWebApp":  cfg.Telegram.WebAppURL != "",
 			"jitoEnabled":     jitoService.Enabled(),
 			"dryRun":          jitoService.DryRun(),
 			"ws":              hub.Stats(),
@@ -202,6 +234,33 @@ func main() {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load spikes"})
 		}
 		return c.JSON(fiber.Map{"items": recent})
+	})
+
+	app.Post("/api/v1/notifications/test", func(c *fiber.Ctx) error {
+		identity, authErr := telegramIdentityFromRequest(c, telegramAuth)
+		if authErr != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "telegram authentication required"})
+		}
+
+		var req struct {
+			ChatID  string `json:"chatId"`
+			Message string `json:"message"`
+		}
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+		}
+
+		msg := strings.TrimSpace(req.Message)
+		if msg == "" {
+			msg = "Sol Whisperer test notification"
+		}
+
+		if err := telegramNotifier.Send(c.UserContext(), strings.TrimSpace(req.ChatID), msg, notification.PriorityHigh); err != nil {
+			logger.Warn().Err(err).Str("userId", identity.UserID).Msg("telegram test notification failed")
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+
+		return c.JSON(fiber.Map{"status": "sent", "userId": identity.UserID})
 	})
 
 	app.Get("/api/v1/listeners/active", func(c *fiber.Ctx) error {
@@ -315,38 +374,6 @@ func newLogger() zerolog.Logger {
 	return log.With().Str("service", "sol-whisperer-api").Logger()
 }
 
-func fanInEvents(ctx context.Context, channels ...<-chan pumpdev.Event) <-chan pumpdev.Event {
-	out := make(chan pumpdev.Event)
-
-	for _, ch := range channels {
-		stream := ch
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case ev, ok := <-stream:
-					if !ok {
-						return
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case out <- ev:
-					}
-				}
-			}
-		}()
-	}
-
-	go func() {
-		<-ctx.Done()
-		close(out)
-	}()
-
-	return out
-}
-
 func telegramIdentityFromRequest(c *fiber.Ctx, verifier *auth.TelegramAuth) (auth.TelegramIdentity, error) {
 	if verifier == nil {
 		return auth.TelegramIdentity{}, errors.New("telegram verifier not configured")
@@ -355,8 +382,9 @@ func telegramIdentityFromRequest(c *fiber.Ctx, verifier *auth.TelegramAuth) (aut
 	if initData == "" {
 		initData = strings.TrimSpace(c.Query("tgInitData"))
 	}
-	if initData == "" {
-		return auth.TelegramIdentity{}, errors.New("telegram init data missing")
+	if initData != "" {
+		return verifier.VerifyWebAppInitData(initData)
 	}
-	return verifier.VerifyWebAppInitData(initData)
+
+	return auth.TelegramIdentity{}, errors.New("telegram init data missing")
 }

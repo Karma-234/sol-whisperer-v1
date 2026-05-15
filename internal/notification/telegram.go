@@ -54,6 +54,35 @@ func (n *TelegramNotifier) Enabled() bool {
 	return n.enabled
 }
 
+func (n *TelegramNotifier) ConfigureWebAppMenu(ctx context.Context, webAppURL string, buttonText string) error {
+	if !n.enabled {
+		return nil
+	}
+	if n.botToken == "" {
+		return errors.New("telegram bot token missing")
+	}
+	if webAppURL == "" {
+		return errors.New("telegram web app url missing")
+	}
+	if buttonText == "" {
+		buttonText = "Open Sol Whisperer"
+	}
+
+	payload := map[string]any{
+		"menu_button": map[string]any{
+			"type": "web_app",
+			"text": buttonText,
+			"web_app": map[string]any{
+				"url": webAppURL,
+			},
+		},
+	}
+	if err := n.postBotAPI(ctx, "setChatMenuButton", payload); err != nil {
+		return fmt.Errorf("configure telegram web app menu: %w", err)
+	}
+	return nil
+}
+
 func (n *TelegramNotifier) Send(ctx context.Context, chatID string, message string, p Priority) error {
 	if !n.enabled {
 		return nil
@@ -74,12 +103,20 @@ func (n *TelegramNotifier) Send(ctx context.Context, chatID string, message stri
 		"parse_mode":               "Markdown",
 		"disable_web_page_preview": true,
 	}
+
+	if err := n.postBotAPI(ctx, "sendMessage", payload); err != nil {
+		return fmt.Errorf("send telegram message: %w", err)
+	}
+	return nil
+}
+
+func (n *TelegramNotifier) postBotAPI(ctx context.Context, method string, payload map[string]any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal telegram payload: %w", err)
 	}
 
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", n.botToken)
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/%s", n.botToken, method)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(body))
 	if err != nil {
 		return fmt.Errorf("build telegram request: %w", err)
@@ -88,7 +125,7 @@ func (n *TelegramNotifier) Send(ctx context.Context, chatID string, message stri
 
 	res, err := n.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("send telegram message: %w", err)
+		return fmt.Errorf("call telegram api: %w", err)
 	}
 	defer res.Body.Close()
 

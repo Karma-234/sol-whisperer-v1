@@ -10,6 +10,10 @@
 # Test binary, built with `go test -c`
 *.test
 *_test.go
+api
+cmd
+
+
 
 # Output of the go coverage tool
 *.out
@@ -46,6 +50,7 @@ dist/
 
 # Database files
 *.db
+*.db.*
 *.sqlite
 *.sqlite3
 migrate
@@ -60,10 +65,15 @@ migrate
 # Temporary files
 tmp/
 temp/
+*.tmp
 
 #scripts
 scripts
 *.yml
+!docker-compose.yml
 reports
 *.py
 *.sh
+
+# Local runtime secrets
+.secrets/

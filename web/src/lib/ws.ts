@@ -4,7 +4,19 @@ import { getTelegramSession } from "./telegram";
 export type LiveEvent = {
   type?: string;
   mint?: string;
+  name?: string;
+  symbol?: string;
   ratio?: number;
+  uniqueWallets?: number;
+  windowVolumeSOL?: number;
+  baselinePer5mSOL?: number;
+  marketCapSOL?: number;
+  tokenCreatedAt?: string;
+  tokenAgeSeconds?: number;
+  floorConfidence?: number;
+  entryGrade?: string;
+  tier?: string;
+  rpcEndpoint?: string;
   priority?: "P1" | "P2" | "P3" | "P4";
   detectedAt?: string;
 };
@@ -30,12 +42,11 @@ export function openLiveSocket(
   options: OpenSocketOptions,
 ): LiveSocketController | null {
   const tg = getTelegramSession();
-  if (!tg.initData) {
-    options.onError("Telegram session missing; live websocket disabled.");
-    return null;
-  }
 
-  const base = apiBaseURL().replace(/^http/, "ws");
+  const apiBase = apiBaseURL();
+  const base = apiBase
+    ? apiBase.replace(/^http/, "ws")
+    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
   const initData = tg.initData;
   let socket: WebSocket | null = null;
   let stopped = false;
@@ -48,8 +59,11 @@ export function openLiveSocket(
     }
 
     options.onStatus(isReconnect ? "reconnecting" : "connecting");
-    const url = new URL("/ws/stream", base);
-    url.searchParams.set("tgInitData", initData);
+    const useAuthStream = !!initData;
+    const url = new URL(useAuthStream ? "/ws/stream" : "/ws/public", base);
+    if (initData) {
+      url.searchParams.set("tgInitData", initData);
+    }
 
     socket = new WebSocket(url.toString());
     socket.onopen = () => {

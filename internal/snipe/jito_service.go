@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -30,6 +31,10 @@ type JitoService struct {
 	logger         zerolog.Logger
 }
 
+// DefaultDontFrontAccount is the canonical marker account used for Jito
+// dont-front protection mode when no auth key is configured.
+const DefaultDontFrontAccount = "jitodontfront111111111111111111111111111111"
+
 type BundleRequest struct {
 	ListenerID    string
 	Mint          string
@@ -49,6 +54,8 @@ type BundleResult struct {
 	BundleID       string
 	Landed         bool
 	MEVOutcome     string
+	ProtectionMode string
+	DontFrontKey   string
 	FallbackToRPC  bool
 	WarningMessage string
 }
@@ -106,15 +113,32 @@ func (s *JitoService) SubmitBundle(ctx context.Context, req BundleRequest) (Bund
 		tip = s.defaultTipSOL
 	}
 
+	mode := "auth-key"
+	dontFrontKey := ""
+	if strings.TrimSpace(s.authKey) == "" {
+		if req.DontFront {
+			mode = "dont-front-marker"
+			dontFrontKey = DefaultDontFrontAccount
+		} else {
+			mode = "no-auth-key"
+		}
+	}
+
 	if s.dryRun {
 		// Dry-run is intentionally default-true to reduce financial risk during setup.
+		warning := fmt.Sprintf("dry-run enabled; no real transaction sent (tip=%.6f, mode=%s)", tip, mode)
+		if dontFrontKey != "" {
+			warning += ", using dont-front marker account"
+		}
 		return BundleResult{
 			Submitted:      true,
 			BundleID:       "dryrun-bundle-" + time.Now().UTC().Format("20060102150405"),
 			Landed:         false,
 			MEVOutcome:     "protected-simulated",
+			ProtectionMode: mode,
+			DontFrontKey:   dontFrontKey,
 			FallbackToRPC:  false,
-			WarningMessage: fmt.Sprintf("dry-run enabled; no real transaction sent (tip=%.6f)", tip),
+			WarningMessage: warning,
 		}, nil
 	}
 
@@ -132,6 +156,8 @@ func (s *JitoService) SubmitBundle(ctx context.Context, req BundleRequest) (Bund
 		BundleID:       "placeholder-bundle-id",
 		Landed:         false,
 		MEVOutcome:     "unknown-pending",
+		ProtectionMode: mode,
+		DontFrontKey:   dontFrontKey,
 		FallbackToRPC:  false,
 		WarningMessage: "bundle submit placeholder implementation",
 	}, nil

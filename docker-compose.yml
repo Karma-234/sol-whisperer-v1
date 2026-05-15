@@ -1,0 +1,59 @@
+services:
+  api:
+    image: sol-whisperer-api:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_HOST: ${APP_HOST:-0.0.0.0}
+      APP_PORT: ${APP_PORT:-8080}
+      SQLITE_PATH: ${SQLITE_PATH:-/app/data/solwhisperer.db}
+
+      SOLANA_RPC_TIER_A: ${SOLANA_RPC_TIER_A:-https://api.mainnet-beta.solana.com}
+      SOLANA_WS_TIER_A: ${SOLANA_WS_TIER_A:-wss://api.mainnet-beta.solana.com}
+      SOLANA_RPC_TIER_B: ${SOLANA_RPC_TIER_B:-https://api.mainnet-beta.solana.com}
+      SOLANA_WS_TIER_B: ${SOLANA_WS_TIER_B:-wss://api.mainnet-beta.solana.com}
+
+      PUMPDEV_WS_URL: ${PUMPDEV_WS_URL:-wss://pumpdev.io/ws}
+
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-true}
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/telegram_bot_token
+      TELEGRAM_DEFAULT_CHAT_ID_FILE: /run/secrets/telegram_default_chat_id
+      TELEGRAM_WEB_APP_URL: ${TELEGRAM_WEB_APP_URL:-}
+      TELEGRAM_WEB_APP_BUTTON_TEXT: ${TELEGRAM_WEB_APP_BUTTON_TEXT:-Open Sol Whisperer}
+
+      JITO_ENABLED: ${JITO_ENABLED:-true}
+      JITO_BLOCK_ENGINE_URL: ${JITO_BLOCK_ENGINE_URL:-}
+      JITO_AUTH_KEY_FILE: /run/secrets/jito_auth_key
+      JITO_DEFAULT_TIP_SOL: ${JITO_DEFAULT_TIP_SOL:-0.001}
+      SNIPE_DRY_RUN: ${SNIPE_DRY_RUN:-true}
+    volumes:
+      - ./data:/app/data
+    secrets:
+      - telegram_bot_token
+      - telegram_default_chat_id
+      - jito_auth_key
+
+  web:
+    image: sol-whisperer-web:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+      args:
+        VITE_API_BASE_URL: ""
+        VITE_TELEGRAM_INIT_DATA: ${VITE_TELEGRAM_INIT_DATA:-}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+secrets:
+  telegram_bot_token:
+    file: ./.secrets/telegram_bot_token
+  jito_auth_key:
+    file: ./.secrets/jito_auth_key
+  telegram_default_chat_id:
+    file: ./.secrets/telegram_default_chat_id

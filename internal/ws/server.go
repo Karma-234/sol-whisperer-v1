@@ -47,69 +47,91 @@ func RegisterRoutes(app *fiber.App, hub *Hub, logger zerolog.Logger, resolveUser
 			return
 		}
 
-		clientID := ClientID(fmt.Sprintf("%s-%d", userID, atomic.AddUint64(&connCounter, 1)))
-		client := hub.AddClientForUser(clientID, userID, 60)
-		defer hub.RemoveClient(clientID)
-
-		log.Info().Str("clientId", string(clientID)).Str("userId", userID).Msg("ws client connected")
-		defer log.Info().Str("clientId", string(clientID)).Str("userId", userID).Msg("ws client disconnected")
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		var writeMu sync.Mutex
-		writeJSON := func(v any) error {
-			writeMu.Lock()
-			defer writeMu.Unlock()
-			return conn.WriteJSON(v)
-		}
-		writePayload := func(payload []byte) error {
-			writeMu.Lock()
-			defer writeMu.Unlock()
-			return conn.WriteMessage(fiberws.TextMessage, payload)
-		}
-
-		go func() {
-			defer cancel()
-			for {
-				if _, _, err := conn.ReadMessage(); err != nil {
-					return
-				}
-			}
-		}()
-
-		_ = writeJSON(fiber.Map{"type": "connected", "clientId": clientID, "userId": userID})
-
-		heartbeatTicker := time.NewTicker(15 * time.Second)
-		defer heartbeatTicker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-heartbeatTicker.C:
-				heartbeat, _ := json.Marshal(fiber.Map{
-					"type":     "heartbeat",
-					"priority": "P4",
-					"ts":       time.Now().UTC(),
-				})
-				if err := writePayload(heartbeat); err != nil {
-					return
-				}
-			default:
-				dqCtx, dqCancel := context.WithTimeout(ctx, 3*time.Second)
-				msg, err := client.Queue.Dequeue(dqCtx)
-				dqCancel()
-				if err != nil {
-					if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-						continue
-					}
-					return
-				}
-				if err := writePayload(msg.Payload); err != nil {
-					return
-				}
-			}
-		}
+		serveWSClient(conn, hub, log, userID)
 	}))
+
+	app.Get("/ws/public", fiberws.New(func(conn *fiberws.Conn) {
+		serveWSClient(conn, hub, log, "")
+	}))
+}
+
+func serveWSClient(conn *fiberws.Conn, hub *Hub, log zerolog.Logger, userID string) {
+	clientPrefix := "public"
+	if userID != "" {
+		clientPrefix = userID
+	}
+
+	clientID := ClientID(fmt.Sprintf("%s-%d", clientPrefix, atomic.AddUint64(&connCounter, 1)))
+	var client *Client
+	if userID == "" {
+		client = hub.AddClient(clientID, 60)
+	} else {
+		client = hub.AddClientForUser(clientID, userID, 60)
+	}
+	defer hub.RemoveClient(clientID)
+
+	log.Info().Str("clientId", string(clientID)).Str("userId", userID).Msg("ws client connected")
+	defer log.Info().Str("clientId", string(clientID)).Str("userId", userID).Msg("ws client disconnected")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var writeMu sync.Mutex
+	writeJSON := func(v any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteJSON(v)
+	}
+	writePayload := func(payload []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteMessage(fiberws.TextMessage, payload)
+	}
+
+	go func() {
+		defer cancel()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	connectedUser := userID
+	if connectedUser == "" {
+		connectedUser = "public"
+	}
+	_ = writeJSON(fiber.Map{"type": "connected", "clientId": clientID, "userId": connectedUser})
+
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeatTicker.C:
+			heartbeat, _ := json.Marshal(fiber.Map{
+				"type":     "heartbeat",
+				"priority": "P4",
+				"ts":       time.Now().UTC(),
+			})
+			if err := writePayload(heartbeat); err != nil {
+				return
+			}
+		default:
+			dqCtx, dqCancel := context.WithTimeout(ctx, 3*time.Second)
+			msg, err := client.Queue.Dequeue(dqCtx)
+			dqCancel()
+			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					continue
+				}
+				return
+			}
+			if err := writePayload(msg.Payload); err != nil {
+				return
+			}
+		}
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -20,13 +21,21 @@ type SQLiteStore struct {
 }
 
 type SpikeEventRecord struct {
-	ID            string
-	Mint          string
-	Ratio         float64
-	WindowVolume  float64
-	BaselinePer5m float64
-	UniqueWallets int
-	CreatedAt     time.Time
+	ID              string    `json:"id"`
+	Mint            string    `json:"mint"`
+	Name            string    `json:"name"`
+	Symbol          string    `json:"symbol"`
+	Ratio           float64   `json:"ratio"`
+	WindowVolume    float64   `json:"windowVolume"`
+	BaselinePer5m   float64   `json:"baselinePer5m"`
+	MarketCapSOL    float64   `json:"marketCapSOL"`
+	UniqueWallets   int       `json:"uniqueWallets"`
+	TokenCreatedAt  time.Time `json:"tokenCreatedAt,omitempty"`
+	TokenAgeSeconds int64     `json:"tokenAgeSeconds"`
+	FloorConfidence float64   `json:"floorConfidence"`
+	EntryScore      float64   `json:"entryScore"`
+	EntryGrade      string    `json:"entryGrade"`
+	CreatedAt       time.Time `json:"createdAt"`
 }
 
 type ListenerRecord struct {
@@ -134,15 +143,38 @@ CREATE TABLE IF NOT EXISTS volume_snapshots (
 CREATE TABLE IF NOT EXISTS spike_events (
   id TEXT PRIMARY KEY,
   mint TEXT NOT NULL,
+  name TEXT,
+  symbol TEXT,
   ratio REAL NOT NULL,
   window_volume_sol REAL NOT NULL,
   baseline_per5m_sol REAL NOT NULL,
+  market_cap_sol REAL NOT NULL DEFAULT 0,
   unique_wallets INTEGER NOT NULL,
+  token_created_at DATETIME,
+  token_age_seconds INTEGER NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `
-	_, err := s.db.ExecContext(ctx, schema)
-	return err
+	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+
+	for _, stmt := range []string{
+		`ALTER TABLE spike_events ADD COLUMN name TEXT`,
+		`ALTER TABLE spike_events ADD COLUMN symbol TEXT`,
+		`ALTER TABLE spike_events ADD COLUMN market_cap_sol REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE spike_events ADD COLUMN token_created_at DATETIME`,
+		`ALTER TABLE spike_events ADD COLUMN token_age_seconds INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE spike_events ADD COLUMN floor_confidence REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE spike_events ADD COLUMN entry_score REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE spike_events ADD COLUMN entry_grade TEXT DEFAULT 'Reject'`,
+	} {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return fmt.Errorf("migrate spike_events metadata columns: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (s *SQLiteStore) InsertVolumeSnapshot(ctx context.Context, mint string, windowStart time.Time, windowEnd time.Time, volumeSOL float64, uniqueWallets int) error {
@@ -159,10 +191,48 @@ VALUES (?, ?, ?, ?, ?)
 
 func (s *SQLiteStore) InsertSpikeEvent(ctx context.Context, rec SpikeEventRecord) error {
 	const query = `
-INSERT INTO spike_events (id, mint, ratio, window_volume_sol, baseline_per5m_sol, unique_wallets, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO spike_events (
+  id,
+  mint,
+  name,
+  symbol,
+  ratio,
+  window_volume_sol,
+  baseline_per5m_sol,
+  market_cap_sol,
+  unique_wallets,
+  token_created_at,
+  token_age_seconds,
+  floor_confidence,
+  entry_score,
+  entry_grade,
+  created_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
-	_, err := s.db.ExecContext(ctx, query, rec.ID, rec.Mint, rec.Ratio, rec.WindowVolume, rec.BaselinePer5m, rec.UniqueWallets, rec.CreatedAt.UTC())
+	var tokenCreatedAt any
+	if !rec.TokenCreatedAt.IsZero() {
+		tokenCreatedAt = rec.TokenCreatedAt.UTC()
+	}
+	_, err := s.db.ExecContext(
+		ctx,
+		query,
+		rec.ID,
+		rec.Mint,
+		rec.Name,
+		rec.Symbol,
+		rec.Ratio,
+		rec.WindowVolume,
+		rec.BaselinePer5m,
+		rec.MarketCapSOL,
+		rec.UniqueWallets,
+		tokenCreatedAt,
+		rec.TokenAgeSeconds,
+		rec.FloorConfidence,
+		rec.EntryScore,
+		rec.EntryGrade,
+		rec.CreatedAt.UTC(),
+	)
 	if err != nil {
 		return fmt.Errorf("insert spike event: %w", err)
 	}
@@ -175,7 +245,22 @@ func (s *SQLiteStore) GetRecentSpikeEvents(ctx context.Context, limit int) ([]Sp
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, mint, ratio, window_volume_sol, baseline_per5m_sol, unique_wallets, created_at
+SELECT
+	id,
+	mint,
+	COALESCE(name, ''),
+	COALESCE(symbol, ''),
+	ratio,
+	window_volume_sol,
+	baseline_per5m_sol,
+	market_cap_sol,
+	unique_wallets,
+	token_created_at,
+	token_age_seconds,
+	COALESCE(floor_confidence, 0),
+	COALESCE(entry_score, 0),
+	COALESCE(entry_grade, 'Reject'),
+	created_at
 FROM spike_events
 ORDER BY created_at DESC
 LIMIT ?
@@ -188,8 +273,28 @@ LIMIT ?
 	result := make([]SpikeEventRecord, 0, limit)
 	for rows.Next() {
 		var r SpikeEventRecord
-		if scanErr := rows.Scan(&r.ID, &r.Mint, &r.Ratio, &r.WindowVolume, &r.BaselinePer5m, &r.UniqueWallets, &r.CreatedAt); scanErr != nil {
+		var tokenCreatedAt sql.NullTime
+		if scanErr := rows.Scan(
+			&r.ID,
+			&r.Mint,
+			&r.Name,
+			&r.Symbol,
+			&r.Ratio,
+			&r.WindowVolume,
+			&r.BaselinePer5m,
+			&r.MarketCapSOL,
+			&r.UniqueWallets,
+			&tokenCreatedAt,
+			&r.TokenAgeSeconds,
+			&r.FloorConfidence,
+			&r.EntryScore,
+			&r.EntryGrade,
+			&r.CreatedAt,
+		); scanErr != nil {
 			return nil, fmt.Errorf("scan spike event row: %w", scanErr)
+		}
+		if tokenCreatedAt.Valid {
+			r.TokenCreatedAt = tokenCreatedAt.Time
 		}
 		result = append(result, r)
 	}

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -43,9 +44,11 @@ type PumpDevConfig struct {
 }
 
 type TelegramConfig struct {
-	Enabled       bool
-	BotToken      string
-	DefaultChatID string
+	Enabled          bool
+	BotToken         string
+	DefaultChatID    string
+	WebAppURL        string
+	WebAppButtonText string
 }
 
 type JitoConfig struct {
@@ -83,14 +86,16 @@ func Load() (Config, error) {
 			WSURL: getEnv("PUMPDEV_WS_URL", "wss://pumpdev.io/ws"),
 		},
 		Telegram: TelegramConfig{
-			Enabled:       parseBool(getEnv("TELEGRAM_ENABLED", "false")),
-			BotToken:      getEnv("TELEGRAM_BOT_TOKEN", ""),
-			DefaultChatID: getEnv("TELEGRAM_DEFAULT_CHAT_ID", ""),
+			Enabled:          parseBool(getEnv("TELEGRAM_ENABLED", "false")),
+			BotToken:         getEnvSecret("TELEGRAM_BOT_TOKEN", ""),
+			DefaultChatID:    getEnvSecret("TELEGRAM_DEFAULT_CHAT_ID", ""),
+			WebAppURL:        getEnv("TELEGRAM_WEB_APP_URL", ""),
+			WebAppButtonText: getEnv("TELEGRAM_WEB_APP_BUTTON_TEXT", "Open Sol Whisperer"),
 		},
 		Jito: JitoConfig{
 			Enabled:        parseBool(getEnv("JITO_ENABLED", "true")),
 			BlockEngineURL: getEnv("JITO_BLOCK_ENGINE_URL", ""),
-			AuthKey:        getEnv("JITO_AUTH_KEY", ""),
+			AuthKey:        getEnvSecret("JITO_AUTH_KEY", ""),
 			DefaultTipSOL:  parseFloat(getEnv("JITO_DEFAULT_TIP_SOL", "0.001")),
 		},
 		Sniping: SnipingConfig{
@@ -114,6 +119,12 @@ func (c Config) validate() error {
 	if c.Telegram.BotToken == "" {
 		return errors.New("TELEGRAM_BOT_TOKEN is required because authentication is Telegram-based")
 	}
+	if strings.EqualFold(c.App.Env, "production") && c.Telegram.WebAppURL == "" {
+		return errors.New("TELEGRAM_WEB_APP_URL is required in production so users can launch the Telegram Mini App")
+	}
+	if c.Telegram.WebAppURL != "" && !strings.HasPrefix(c.Telegram.WebAppURL, "https://") {
+		return errors.New("TELEGRAM_WEB_APP_URL must be an HTTPS URL")
+	}
 	if c.Jito.Enabled && !c.Sniping.DryRun && c.Jito.BlockEngineURL == "" {
 		return errors.New("JITO_BLOCK_ENGINE_URL is required when JITO_ENABLED=true and SNIPE_DRY_RUN=false")
 	}
@@ -128,6 +139,22 @@ func getEnv(key, fallback string) string {
 		return strings.TrimSpace(val)
 	}
 	return fallback
+}
+
+func getEnvSecret(key, fallback string) string {
+	if pathRaw, ok := os.LookupEnv(key + "_FILE"); ok {
+		path := strings.TrimSpace(pathRaw)
+		if path != "" {
+			b, err := os.ReadFile(filepath.Clean(path))
+			if err == nil {
+				v := strings.TrimSpace(string(b))
+				if v != "" {
+					return v
+				}
+			}
+		}
+	}
+	return getEnv(key, fallback)
 }
 
 func splitCSV(in string) []string {
