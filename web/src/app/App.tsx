@@ -69,6 +69,12 @@ type PortalFeedItem = {
   rawPayload: string;
 };
 
+type MarketTickerItem = {
+  symbol: 'SOL' | 'ETH' | 'BTC';
+  pair: string;
+  price: number | null;
+};
+
 const MAX_FEED_ITEMS = 32;
 const tabs = ['Signals', 'Listeners', 'Risk', 'Settings'] as const;
 const streamTabs: Array<{ id: StreamView; label: string }> = [
@@ -97,6 +103,15 @@ function formatCompactUSD(value?: number): string {
     maximumFractionDigits: value >= 100 ? 1 : 2,
     currency: 'USD',
     style: 'currency',
+  }).format(value);
+}
+
+function formatTickerPrice(value: number | null): string {
+  if (typeof value !== 'number' || Number.isNaN(value) || value <= 0) return '--';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: value >= 1000 ? 0 : value >= 100 ? 2 : 4,
   }).format(value);
 }
 
@@ -221,6 +236,11 @@ export function App() {
   const [socketStatus, setSocketStatus] = useState<SocketStatus>('connecting');
   const [lastMessageAt, setLastMessageAt] = useState<string>('');
   const [solUsdRate, setSolUsdRate] = useState<number | null>(null);
+  const [marketTicker, setMarketTicker] = useState<MarketTickerItem[]>([
+    { symbol: 'SOL', pair: 'SOL/USD', price: null },
+    { symbol: 'ETH', pair: 'ETH/USD', price: null },
+    { symbol: 'BTC', pair: 'BTC/USD', price: null },
+  ]);
   const [leaderDock, setLeaderDock] = useState<LeaderDock>(() => {
     const stored = localStorage.getItem('signalLeadersDockTarget');
     return stored === 'left' || stored === 'center' || stored === 'right' || stored === 'float' ? stored : 'float';
@@ -718,27 +738,46 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadSolUsdRate() {
+    async function loadMarketTicker() {
       try {
-        const response = await fetch('https://api.coinbase.com/v2/prices/SOL-USD/spot');
-        if (!response.ok) {
-          throw new Error(`SOL/USD spot request failed: ${response.status}`);
+        const pairs = ['SOL-USD', 'ETH-USD', 'BTC-USD'] as const;
+        const results = await Promise.all(pairs.map(async (pair) => {
+          const response = await fetch(`https://api.coinbase.com/v2/prices/${pair}/spot`);
+          if (!response.ok) {
+            throw new Error(`${pair} spot request failed: ${response.status}`);
+          }
+          const payload = await response.json() as { data?: { amount?: string } };
+          return {
+            pair,
+            price: Number(payload.data?.amount ?? ''),
+          };
+        }));
+
+        if (cancelled) {
+          return;
         }
-        const payload = await response.json() as { data?: { amount?: string } };
-        const nextRate = Number(payload.data?.amount ?? '');
-        if (!cancelled && Number.isFinite(nextRate) && nextRate > 0) {
-          setSolUsdRate(nextRate);
+
+        const nextTicker: MarketTickerItem[] = results.map(({ pair, price }) => ({
+          symbol: pair.slice(0, 3) as MarketTickerItem['symbol'],
+          pair: pair.replace('-', '/'),
+          price: Number.isFinite(price) && price > 0 ? price : null,
+        }));
+        setMarketTicker(nextTicker);
+
+        const sol = nextTicker.find((item) => item.symbol === 'SOL')?.price ?? null;
+        if (typeof sol === 'number' && Number.isFinite(sol) && sol > 0) {
+          setSolUsdRate(sol);
         }
       } catch {
-        if (!cancelled) {
-          setSolUsdRate(null);
-        }
+        if (cancelled) return;
+        setSolUsdRate(null);
+        setMarketTicker((current) => current.map((item) => ({ ...item, price: null })));
       }
     }
 
-    void loadSolUsdRate();
+    void loadMarketTicker();
     const refresh = window.setInterval(() => {
-      void loadSolUsdRate();
+      void loadMarketTicker();
     }, 5 * 60 * 1000);
 
     return () => {
@@ -1054,13 +1093,17 @@ export function App() {
         </div>
       </header>
 
-      <section className="desk-note" aria-label="Desk summary">
-        <div>
-          <span className="eyebrow">Desk note</span>
-          <strong>{deskMood}</strong>
-          <p>Read the tape for conviction, not noise. Priority, wallet breadth, and route quality matter more than raw volume alone.</p>
+      <section className="market-carousel" aria-label="Live market ticker">
+        <div className="market-carousel-track">
+          {[...marketTicker, ...marketTicker].map((item, index) => (
+            <div className="market-ticker-chip" key={`${item.symbol}-${index}`}>
+              <span className="market-ticker-symbol">{item.symbol}</span>
+              <span className="market-ticker-pair">{item.pair}</span>
+              <strong>{formatTickerPrice(item.price)}</strong>
+            </div>
+          ))}
         </div>
-        <div className="desk-note-meta">
+        <div className="market-carousel-meta">
           <span><strong>Last signal</strong>{lastSeenLabel}</span>
           <span><strong>Mode</strong>{isAuthed ? 'Personal desk' : 'Public read-only'}</span>
         </div>
