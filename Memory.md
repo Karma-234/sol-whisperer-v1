@@ -51,6 +51,7 @@ Continue implementation after dependency security gate: normalize module/imports
 ### Open Questions
 
 - Decide whether to lock npm versions tighter (exact pins) versus caret ranges for patch/minor drift.
+
 - Select final free-tier RPC endpoint list for Tier A and Tier B defaults.
 
 ### Next Steps
@@ -1115,6 +1116,191 @@ Implement floor confidence and entry score computation in the spike detector's h
 - Frontend displays scores in live tape without secondary queries
 - Rationale: Matches low-latency pattern, uses existing emit infrastructure, no GC spikes from deferred computation
 
+## Checkpoint 2026-05-15 PumpPortal Payload Confirmation + Portal Tile Rhythm
+
+### Current Task
+
+Confirm the real PumpPortal payload shape used by the dashboard integration, align the parser to confirmed wire fields, and bring the newly created/newly migrated row resting colors back into the same visual system as the main tape.
+
+### Fixes Applied
+
+- Ran a live PumpPortal websocket probe against `wss://pumpportal.fun/api/data?api-key=...` using the configured root secret file.
+- Confirmed live `subscribeNewToken` create payloads include:
+  - `signature`
+  - `mint`
+  - `traderPublicKey`
+  - `txType=create`
+  - `initialBuy`
+  - `solAmount`
+  - `bondingCurveKey`
+  - `vTokensInBondingCurve`
+  - `vSolInBondingCurve`
+  - `marketCapSol`
+  - `name`
+  - `symbol`
+  - `uri`
+  - `is_mayhem_mode`
+  - `pool`
+- Updated `internal/pumpportal/client.go` normalization to map the confirmed extra create fields:
+  - `is_mayhem_mode` -> `IsMayhemMode`
+  - `pool` -> `Pool`
+- Extended PumpPortal websocket payload forwarding so frontend clients now receive `pool` and `isMayhemMode` with created/migrated stream events.
+- Extended frontend PumpPortal row models to retain and display those confirmed fields.
+- Retuned the newly created/newly migrated row resting backgrounds in `web/src/styles/global.css` so they use the same neutral surface cadence as the main signal tape instead of a separate-feeling tint system.
+
+### Important Notes
+
+- The same live probe also returned an upstream warning before migration samples arrived:
+  - `{"errors":"Minimum balance not met for PumpSwap websocket data."}`
+- Because of that warning, this checkpoint fully confirms the create payload shape, but does **not** fully confirm the migration event wire shape for the current API key balance state.
+- The current migration parser remains partially heuristic until a real migration sample is captured.
+- Follow-up correction: confirmed create payloads also include `pool="pump"`, so `pool` is **not** a safe migration discriminator. The stream classifier was narrowed to explicit migration markers such as `txType~migrat`, `poolAddress`, `migrationPool`, or `liquidityPool`.
+
+### Validation
+
+- `internal/pumpportal/client.go` diagnostics clean.
+- `cmd/api/main.go` diagnostics clean.
+- `web/src/app/App.tsx` diagnostics clean.
+- `web/src/styles/global.css` diagnostics clean.
+- `go build ./cmd/api` passes.
+- `npm run build` in `web/` passes.
+
+## Checkpoint 2026-05-15 PumpPortal Mayhem UI + Visibility Filter
+
+### Current Task
+
+Surface PumpPortal `is_mayhem_mode` clearly in the created/migrated UI, allow operators to hide or re-include mayhem names without losing the raw stream, and finish removing the remaining card-like resting treatment from portal rows.
+
+### Changes Applied
+
+- Reused the already-parsed `isMayhemMode` field in the frontend portal stream models.
+- Added a persisted PumpPortal visibility mode in `web/src/app/App.tsx`:
+  - `all`: show every PumpPortal item
+  - `clean`: hide rows where `isMayhemMode` is true
+- Stored the operator preference in `localStorage` under `pumpPortalMayhemVisibility`.
+- Added a mayhem control row to the created/migrated streams so users can toggle between `Hide mayhem` and `Show all`.
+- Added an inline mayhem state pill to each portal token row, alongside pool and metadata state pills, so the token line communicates source state without relying on raw text fragments.
+- Retuned portal row styling in `web/src/styles/global.css` to remove the lingering “card inside a row” feel:
+  - row base now reads as part of the table rather than a separate tile
+  - token cell background and border chrome removed
+  - alternating rhythm softened into the table surface instead of standalone tinted blocks
+
+### Result
+
+- PumpPortal rows now expose mayhem state explicitly per token.
+- Users can exclude mayhem names from both Newly Created and Newly Migrated views, then opt back in immediately.
+- The portal rows now sit closer to the main tape's visual cadence instead of reading like a second card system.
+
+## Checkpoint 2026-05-15 Watched Mint PumpPortal Tier A Ownership
+
+### Current Task
+
+Make watched tokens use PumpPortal token-trade as the Tier A source of truth, share one upstream subscription across all users watching the same mint, and remove that upstream subscription when the last watcher leaves.
+
+### Backend Changes
+
+- Refactored `internal/pumpportal/trade_tracker.go` so it now tracks watcher counts per mint instead of blindly accumulating tracked mints from spike callbacks.
+- Added shared subscription lifecycle methods:
+  - `AddWatch(mint)` subscribes only on the first watcher
+  - `RemoveWatch(mint)` unsubscribes only after the last watcher is removed
+- Extended the trade tracker connection output so it emits:
+  - normalized buy events shaped like `pumpdev.Event`
+  - aggregate `TradeMetric` snapshots for frontend Tier A buy display
+- Wired those normalized PumpPortal buy events into `volume.Processor.ProcessEvent()` inside `cmd/api/main.go`, which means watched PumpPortal buys now flow through the same spike detector used by the existing dashboard + Telegram alert path.
+- Moved PumpPortal trade subscription ownership to the actual listener lifecycle:
+  - preload active listeners on startup -> subscribe watched mints
+  - `POST /api/v1/listeners/watch` -> add watcher and subscribe first watcher
+  - `DELETE /api/v1/listeners/watch` -> remove watcher and unsubscribe when watcher count reaches zero
+- Removed the old behavior where any detected spike would opportunistically call `TrackMint`, which was too broad and not tied to deliberate user watch intent.
+
+### Result
+
+- Watched mints now prefer PumpPortal token-trade as the Tier A watched flow path.
+- If one user starts watching a mint, the service opens one PumpPortal token-trade subscription.
+- If more users watch the same mint later, they are added to the local broadcast/notification fanout without opening duplicate upstream subscriptions.
+- When the last user unpins the mint, the service unsubscribes from PumpPortal token-trade for that mint.
+- Personal web dashboard fanout and Telegram alerts continue to come from the shared spike detector, but watched PumpPortal buys now feed that path directly.
+
+## Checkpoint 2026-05-15 Latency Telemetry + Watch Debug Visibility
+
+### Current Task
+
+Extend the floating latency badge so it shows real network health instead of only UI FPS, then expose PumpPortal watch ownership state for debugging and improve the watched Telegram alert copy.
+
+### Changes Applied
+
+- Frontend latency indicator now reports three live signals:
+  - UI framerate from `requestAnimationFrame`
+  - backend round-trip time from periodic `GET /readyz`
+  - browser link quality when available via `navigator.connection` (`effectiveType` + `downlink`)
+- Added backend PumpPortal watch visibility endpoint:
+  - `GET /api/v1/pump-portal/watch-stats`
+  - returns `activeMints` and per-mint watcher counts
+  - protected by the same Telegram auth gate as listener endpoints
+- Added `Stats()` to `internal/pumpportal/trade_tracker.go` so the API can expose current shared subscription ownership without reaching into internal maps directly.
+- Tightened watched Telegram spike copy in `cmd/api/main.go` so personal watched alerts now include token identity, compact ratio, wallet breadth, mint, and explicit `PumpPortal Tier A watched flow` labeling.
+
+### Result
+
+- The latency chip now reflects both render health and actual network conditions from the client side.
+- Operators can inspect current PumpPortal shared watch ownership without guessing from logs.
+- Personal watched alerts are more readable and explain why the user is seeing that spike.
+
+## Checkpoint 2026-05-15 One-Shot PumpPortal Migration Capture
+
+### Current Task
+
+We still do not have a real raw `subscribeMigration` payload in the repo or local logs, so add a safe one-shot capture path that writes the next actual migrated event to disk for parser correction.
+
+### Changes Applied
+
+- Added `PUMP_PORTAL_MIGRATION_CAPTURE_PATH` to runtime config and `.env.example`.
+- Extended `internal/pumpportal/client.go` so it can write the first real migrated event's `RawPayload` to the configured file path.
+- Capture is one-shot:
+  - only runs for `StreamMigrated`
+  - only writes when `RawPayload` exists
+  - only writes once per process
+- Wired the new config into `cmd/api/main.go` when constructing the PumpPortal client.
+
+### Result
+
+- The next real PumpPortal migration event can be captured verbatim without changing stream semantics or keeping permanent debug logging on.
+- Once captured, the migration parser can be updated from the actual upstream wire payload instead of heuristic inference.
+
+## Checkpoint 2026-05-15 Docking, Telemetry, And Watch Surface Polish
+
+### Current Task
+
+Finish the operator-facing polish around floating controls and Tier A watch visibility while keeping the PumpPortal migration path auditable.
+
+### Changes Applied
+
+- Upgraded the floating latency badge from FPS-only to combined client health telemetry:
+  - UI framerate from `requestAnimationFrame`
+  - backend RTT from periodic `GET /readyz`
+  - browser-reported network link quality when available
+- Kept the latency badge corner-draggable and persisted via local storage.
+- Removed the manual dock buttons from the floating signal leaderboard.
+- Changed leaderboard auto-dock resolution to measure the real `.left-rail`, `.center-stage`, and `.right-rail` positions instead of using approximate viewport constants.
+- Added authenticated PumpPortal watch visibility to the frontend Settings view:
+  - reads `/api/v1/pump-portal/watch-stats`
+  - renders active watched mint groups and watcher counts
+  - refreshes periodically so multi-client watch changes show up without a hard reload
+- Added a visible `PumpPortal Tier A watched` badge directly on personal spike rows in the main signal tape.
+- Retuned newly created/newly migrated idle row styling again so the unselected state has:
+  - a real desk-surface base
+  - a lighter alternating cadence
+  - a restrained badge lane
+  - a clearer token-cell resting surface and hover state
+
+### Result
+
+- The floating leaderboard now docks by drag proximity instead of advertising a second manual docking model.
+- Operators can read both render and network health from the latency badge.
+- Tier A watch ownership is visible in both backend debug output and frontend Settings.
+- Personal watched spikes now identify their PumpPortal Tier A source directly in the tape.
+- PumpPortal created/migrated idle rows sit closer to the main desk system and no longer read like off-theme detached cards.
+
 ### Implementation Summary
 
 **Backend Changes:**
@@ -1258,3 +1444,57 @@ Where:
 - All score fields are optional (? suffix in types) → frontend gracefully displays "--" if missing
 - SQLite schema migration is additive (no deletes) → safe on existing DBs
 - Scores not used in any routing logic yet → no impact if values incorrect during debug
+
+## Checkpoint 2026-05-15 Tab Active-State Refinement
+
+### Current Task
+
+Make selected tabs more visually distinct in the current square-corner UI state.
+
+### Progress Summary
+
+- Strengthened active states for both top-level dashboard tabs and stream tabs.
+- Added a clearer lilac inset edge and stronger active border presence so the selected tab reads immediately.
+
+### Key Decisions
+
+- Keep the active-state treatment sharp and restrained rather than shifting back to heavy pills.
+- Use the accent color as a focused selection cue instead of broad background tinting.
+
+### Open Questions
+
+- Should inactive tabs be dimmed slightly further if more contrast is still needed after a live pass?
+
+### Next Steps
+
+- Check the updated active-state contrast in both light and dark themes with the running UI.
+
+## Checkpoint 2026-05-15 Migrated Feed Enrichment
+
+### Current Task
+
+Make the newly migrated PumpPortal feed materially more informative by enriching sparse migration events before they reach the frontend.
+
+### Progress Summary
+
+- Confirmed the real PumpPortal migration payload is minimal and only reliably carries `signature`, `mint`, `txType`, and `pool`.
+- Added a DexScreener-backed migration enricher in `internal/pumpportal/enricher.go` keyed by migrated mint.
+- Extended `pumpportal.Event` and the API/websocket payloads with pair and market context including dex id, pair address, liquidity, FDV, USD pricing, short-horizon volume, buy/sell counts, pair creation time, and basic profile links.
+- Updated the migrated frontend table to render the richer fields instead of repeating the thin created-stream layout.
+- Validated with `go build ./cmd/api` and `npm run build`.
+
+### Key Decisions
+
+- Treat PumpPortal migration events as low-latency triggers and enrich them server-side rather than pushing external API joins into the frontend.
+- Start with DexScreener because it provides the fastest UX gain for migrated cards: liquidity, FDV, volume, pair age, and basic token profile context.
+- Keep enrichment scoped to migrated events only for this slice.
+
+### Open Questions
+
+- Should a second enrichment step use RPC `getTransaction(signature)` to pull even more authoritative migration-specific context such as signer or pool account details?
+- Should we cache enriched pairs longer than two minutes once production traffic patterns are observed?
+
+### Next Steps
+
+- Evaluate whether the migrated cards should also show price and 5m buy/sell split directly in the row.
+- Consider a follow-up RPC transaction enrichment pass if DexScreener alone still leaves important migration context missing.

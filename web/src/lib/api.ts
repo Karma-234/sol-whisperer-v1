@@ -39,6 +39,44 @@ export type ListenerWatchInput = {
   autoSnipeEnabled?: boolean;
 };
 
+export type PumpPortalStream = "created" | "migrated";
+
+export type PumpPortalEvent = {
+  stream: PumpPortalStream;
+  mint: string;
+  name?: string;
+  symbol?: string;
+  uri?: string;
+  pool?: string;
+  isMayhemMode?: boolean;
+  txType?: string;
+  signature?: string;
+  marketCapSOL?: number;
+  initialBuySOL?: number;
+  dexId?: string;
+  pairAddress?: string;
+  priceUsd?: number;
+  priceNative?: number;
+  marketCapUsd?: number;
+  liquidityUsd?: number;
+  fdv?: number;
+  volume5mUsd?: number;
+  volume1hUsd?: number;
+  buys5m?: number;
+  sells5m?: number;
+  pairCreatedAt?: string;
+  imageUrl?: string;
+  websiteUrl?: string;
+  socialHandle?: string;
+  timestamp?: string;
+  rawPayload?: string;
+};
+
+export type PumpPortalWatchStats = {
+  activeMints: number;
+  watcherCounts: Record<string, number>;
+};
+
 function authHeadersOrNull(): Record<string, string> | null {
   const tg = getTelegramSession();
   if (tg.initData) {
@@ -70,6 +108,29 @@ export async function fetchRecentSpikes(): Promise<SpikeEvent[]> {
     "/api/v1/spikes/recent",
   );
   return data.items ?? [];
+}
+
+export async function fetchPumpPortalRecent(
+  stream: PumpPortalStream,
+): Promise<PumpPortalEvent[]> {
+  const data = await fetchJSON<{ items: PumpPortalEvent[] }>(
+    `/api/v1/pump-portal/recent?stream=${stream}`,
+  );
+  return data.items ?? [];
+}
+
+export async function fetchPumpPortalWatchStats(): Promise<PumpPortalWatchStats | null> {
+  const authHeaders = authHeadersOrNull();
+  if (!authHeaders) {
+    return null;
+  }
+  const data = await fetchJSON<{ stats: PumpPortalWatchStats }>(
+    "/api/v1/pump-portal/watch-stats",
+    {
+      headers: authHeaders,
+    },
+  );
+  return data.stats ?? null;
 }
 
 export async function fetchMyListeners(): Promise<string[]> {

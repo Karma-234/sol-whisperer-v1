@@ -13,13 +13,14 @@ import (
 // Config is the top-level strongly-typed runtime configuration.
 // Strong typing prevents silent misconfiguration in financial workflows.
 type Config struct {
-	App      AppConfig
-	Database DatabaseConfig
-	RPC      RPCConfig
-	PumpDev  PumpDevConfig
-	Telegram TelegramConfig
-	Jito     JitoConfig
-	Sniping  SnipingConfig
+	App        AppConfig
+	Database   DatabaseConfig
+	RPC        RPCConfig
+	PumpDev    PumpDevConfig
+	PumpPortal PumpPortalConfig
+	Telegram   TelegramConfig
+	Jito       JitoConfig
+	Sniping    SnipingConfig
 }
 
 type AppConfig struct {
@@ -41,6 +42,12 @@ type RPCConfig struct {
 
 type PumpDevConfig struct {
 	WSURL string
+}
+
+type PumpPortalConfig struct {
+	WSURL                string
+	APIKey               string
+	MigrationCapturePath string
 }
 
 type TelegramConfig struct {
@@ -84,6 +91,11 @@ func Load() (Config, error) {
 		},
 		PumpDev: PumpDevConfig{
 			WSURL: getEnv("PUMPDEV_WS_URL", "wss://pumpdev.io/ws"),
+		},
+		PumpPortal: PumpPortalConfig{
+			WSURL:                getEnv("PUMP_PORTAL_WS_URL", "wss://pumpportal.fun/api/data"),
+			APIKey:               getEnvSecret("PUMP_PORTAL_API_KEY", ""),
+			MigrationCapturePath: getEnv("PUMP_PORTAL_MIGRATION_CAPTURE_PATH", ""),
 		},
 		Telegram: TelegramConfig{
 			Enabled:          parseBool(getEnv("TELEGRAM_ENABLED", "false")),

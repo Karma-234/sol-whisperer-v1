@@ -3,14 +3,38 @@ import { getTelegramSession } from "./telegram";
 
 export type LiveEvent = {
   type?: string;
+  stream?: "created" | "migrated";
   mint?: string;
   name?: string;
   symbol?: string;
+  uri?: string;
+  pool?: string;
+  isMayhemMode?: boolean;
+  txType?: string;
+  signature?: string;
   ratio?: number;
+  buyVolumeSOL?: number;
+  buyCount?: number;
   uniqueWallets?: number;
   windowVolumeSOL?: number;
   baselinePer5mSOL?: number;
   marketCapSOL?: number;
+  initialBuySOL?: number;
+  dexId?: string;
+  pairAddress?: string;
+  priceUsd?: number;
+  priceNative?: number;
+  marketCapUsd?: number;
+  liquidityUsd?: number;
+  fdv?: number;
+  volume5mUsd?: number;
+  volume1hUsd?: number;
+  buys5m?: number;
+  sells5m?: number;
+  pairCreatedAt?: string;
+  imageUrl?: string;
+  websiteUrl?: string;
+  socialHandle?: string;
   tokenCreatedAt?: string;
   tokenAgeSeconds?: number;
   floorConfidence?: number;
@@ -19,6 +43,7 @@ export type LiveEvent = {
   rpcEndpoint?: string;
   priority?: "P1" | "P2" | "P3" | "P4";
   detectedAt?: string;
+  rawPayload?: string;
 };
 
 export type SocketStatus =

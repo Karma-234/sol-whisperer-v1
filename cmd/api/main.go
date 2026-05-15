@@ -22,6 +22,7 @@ import (
 	"github.karma-234/sol-whisperer-v1/internal/listener"
 	"github.karma-234/sol-whisperer-v1/internal/notification"
 	"github.karma-234/sol-whisperer-v1/internal/pumpdev"
+	"github.karma-234/sol-whisperer-v1/internal/pumpportal"
 	"github.karma-234/sol-whisperer-v1/internal/rpc"
 	"github.karma-234/sol-whisperer-v1/internal/snipe"
 	"github.karma-234/sol-whisperer-v1/internal/store"
@@ -85,11 +86,13 @@ func main() {
 
 	hub := ws.NewHub(logger, 256)
 	listenerRegistry := listener.NewRegistry()
+	portalTradeTracker := pumpportal.NewTradeTracker(cfg.PumpPortal.WSURL, cfg.PumpPortal.APIKey, logger)
 	if activeListeners, listErr := sqliteStore.ListActiveListeners(ctx); listErr != nil {
 		logger.Warn().Err(listErr).Msg("failed to preload active listeners")
 	} else {
 		for _, rec := range activeListeners {
 			listenerRegistry.AddWatch(rec.UserID, rec.Mint)
+			portalTradeTracker.AddWatch(rec.Mint)
 		}
 	}
 
@@ -163,7 +166,15 @@ func main() {
 				}
 			}
 		}
-		notificationMessage := "Volume spike detected for mint: " + spike.Mint
+		tokenLabel := spike.Mint
+		if spike.Name != "" && spike.Symbol != "" {
+			tokenLabel = spike.Name + " / " + spike.Symbol
+		} else if spike.Symbol != "" {
+			tokenLabel = spike.Symbol
+		} else if spike.Name != "" {
+			tokenLabel = spike.Name
+		}
+		notificationMessage := formatSpikeAlert(tokenLabel, spike, rpcTier, hasListener)
 		if hasListener {
 			for _, userID := range listenerRegistry.UsersForMint(spike.Mint) {
 				if notifyErr := telegramNotifier.Send(ctx, userID, notificationMessage, notifyPriority); notifyErr != nil {
@@ -176,6 +187,10 @@ func main() {
 	}, logger, volume.ProcessorConfig{MinSpikeEmitInterval: 20 * time.Second, TxDedupeWindow: 5 * time.Minute})
 
 	rpcWSClient := rpc.NewWSClient(rpcManager, logger)
+	portalBuffer := pumpportal.NewRecentBuffer(80)
+	portalClient := pumpportal.NewClient(cfg.PumpPortal.WSURL, cfg.PumpPortal.APIKey, cfg.PumpPortal.MigrationCapturePath, logger)
+	portalEnricher := pumpportal.NewDexScreenerEnricher(&http.Client{Timeout: 4 * time.Second}, logger)
+	portalIdentityCache := make(map[string]pumpportal.Event)
 
 	pumpEvents, pumpErrs := pumpClient.Connect(ctx)
 	rpcEvents, rpcErrs := rpcWSClient.Connect(ctx)
@@ -185,6 +200,143 @@ func main() {
 			logger.Error().Err(runErr).Msg("volume processor stopped with error")
 		}
 	}()
+
+	if portalClient.Enabled() {
+		portalEvents, portalErrs := portalClient.Connect(ctx)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case err, ok := <-portalErrs:
+					if !ok {
+						portalErrs = nil
+						continue
+					}
+					if err != nil {
+						logger.Warn().Err(err).Msg("pumpportal stream error")
+					}
+				case ev, ok := <-portalEvents:
+					if !ok {
+						portalEvents = nil
+						continue
+					}
+					if cached, ok := portalIdentityCache[ev.Mint]; ok {
+						if strings.TrimSpace(ev.Name) == "" {
+							ev.Name = cached.Name
+						}
+						if strings.TrimSpace(ev.Symbol) == "" {
+							ev.Symbol = cached.Symbol
+						}
+						if strings.TrimSpace(ev.URI) == "" {
+							ev.URI = cached.URI
+						}
+					}
+					if ev.Stream == pumpportal.StreamMigrated {
+						enrichCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+						ev = portalEnricher.Enrich(enrichCtx, ev)
+						cancel()
+					}
+					if strings.TrimSpace(ev.Name) != "" || strings.TrimSpace(ev.Symbol) != "" || strings.TrimSpace(ev.URI) != "" {
+						portalIdentityCache[ev.Mint] = pumpportal.Event{
+							Mint:   ev.Mint,
+							Name:   ev.Name,
+							Symbol: ev.Symbol,
+							URI:    ev.URI,
+						}
+					}
+					portalBuffer.Add(ev)
+					eventType := "portal_new_token"
+					if ev.Stream == pumpportal.StreamMigrated {
+						eventType = "portal_migration"
+					}
+					payload, marshalErr := json.Marshal(fiber.Map{
+						"type":          eventType,
+						"stream":        ev.Stream,
+						"mint":          ev.Mint,
+						"name":          ev.Name,
+						"symbol":        ev.Symbol,
+						"uri":           ev.URI,
+						"pool":          ev.Pool,
+						"isMayhemMode":  ev.IsMayhemMode,
+						"txType":        ev.TxType,
+						"signature":     ev.Signature,
+						"marketCapSOL":  ev.MarketCapSOL,
+						"initialBuySOL": ev.InitialBuySOL,
+						"dexId":         ev.DexID,
+						"pairAddress":   ev.PairAddress,
+						"priceUsd":      ev.PriceUSD,
+						"priceNative":   ev.PriceNative,
+						"marketCapUsd":  ev.MarketCapUSD,
+						"liquidityUsd":  ev.LiquidityUSD,
+						"fdv":           ev.FDV,
+						"volume5mUsd":   ev.Volume5mUSD,
+						"volume1hUsd":   ev.Volume1hUSD,
+						"buys5m":        ev.Buys5m,
+						"sells5m":       ev.Sells5m,
+						"pairCreatedAt": ev.PairCreatedAt,
+						"imageUrl":      ev.ImageURL,
+						"websiteUrl":    ev.WebsiteURL,
+						"socialHandle":  ev.SocialHandle,
+						"detectedAt":    ev.Timestamp,
+						"rawPayload":    ev.RawPayload,
+					})
+					if marshalErr == nil {
+						hub.Broadcast(ws.Message{Priority: ws.PriorityP2High, Payload: payload})
+					}
+				}
+
+				if portalEvents == nil && portalErrs == nil {
+					return
+				}
+			}
+		}()
+	} else {
+		logger.Info().Msg("pumpportal feed disabled: api key not configured")
+	}
+
+	if portalTradeTracker.Enabled() {
+		tradeUpdates, tradeErrs := portalTradeTracker.Connect(ctx)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case err, ok := <-tradeErrs:
+					if !ok {
+						tradeErrs = nil
+						continue
+					}
+					if err != nil {
+						logger.Warn().Err(err).Msg("pumpportal trade tracker error")
+					}
+				case update, ok := <-tradeUpdates:
+					if !ok {
+						tradeUpdates = nil
+						continue
+					}
+					if handleErr := processor.ProcessEvent(ctx, update.Event); handleErr != nil {
+						logger.Error().Err(handleErr).Str("mint", update.Event.Mint).Str("source", "pumpportal").Msg("failed to process watched pumpportal trade")
+					}
+					payload, marshalErr := json.Marshal(fiber.Map{
+						"type":         "portal_trade_metric",
+						"mint":         update.Metric.Mint,
+						"buyVolumeSOL": update.Metric.BuyVolumeSOL,
+						"buyCount":     update.Metric.BuyCount,
+						"detectedAt":   update.Metric.LastTradeAt,
+						"updatedAt":    update.Metric.UpdatedAt,
+					})
+					if marshalErr == nil {
+						hub.Broadcast(ws.Message{Priority: ws.PriorityP2High, Payload: payload})
+					}
+				}
+
+				if tradeUpdates == nil && tradeErrs == nil {
+					return
+				}
+			}
+		}()
+	}
 
 	app := fiber.New(fiber.Config{
 		AppName:               "sol-whisperer-v1",
@@ -217,14 +369,16 @@ func main() {
 		// This endpoint exists to validate base wiring for auth/rpc/notifier/service lifecycles.
 		// Returning light-weight metadata helps frontend integration before feature-complete APIs exist.
 		return c.JSON(fiber.Map{
-			"authMode":        "telegram",
-			"rpcTierAReady":   rpcManager.HasTier(rpc.TierA),
-			"rpcTierBReady":   rpcManager.HasTier(rpc.TierB),
-			"telegramEnabled": telegramNotifier.Enabled(),
-			"telegramWebApp":  cfg.Telegram.WebAppURL != "",
-			"jitoEnabled":     jitoService.Enabled(),
-			"dryRun":          jitoService.DryRun(),
-			"ws":              hub.Stats(),
+			"authMode":             "telegram",
+			"rpcTierAReady":        rpcManager.HasTier(rpc.TierA),
+			"rpcTierBReady":        rpcManager.HasTier(rpc.TierB),
+			"pumpPortalEnabled":    portalClient.Enabled(),
+			"pumpPortalBuyEnabled": portalTradeTracker.Enabled(),
+			"telegramEnabled":      telegramNotifier.Enabled(),
+			"telegramWebApp":       cfg.Telegram.WebAppURL != "",
+			"jitoEnabled":          jitoService.Enabled(),
+			"dryRun":               jitoService.DryRun(),
+			"ws":                   hub.Stats(),
 		})
 	})
 
@@ -234,6 +388,22 @@ func main() {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load spikes"})
 		}
 		return c.JSON(fiber.Map{"items": recent})
+	})
+
+	app.Get("/api/v1/pump-portal/recent", func(c *fiber.Ctx) error {
+		stream := strings.TrimSpace(c.Query("stream"))
+		if stream != pumpportal.StreamCreated && stream != pumpportal.StreamMigrated {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "stream must be created or migrated"})
+		}
+		return c.JSON(fiber.Map{"items": portalBuffer.List(stream, 40)})
+	})
+
+	app.Get("/api/v1/pump-portal/watch-stats", func(c *fiber.Ctx) error {
+		identity, err := telegramIdentityFromRequest(c, telegramAuth)
+		if err != nil {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "telegram authentication required"})
+		}
+		return c.JSON(fiber.Map{"userId": identity.UserID, "stats": portalTradeTracker.Stats()})
 	})
 
 	app.Post("/api/v1/notifications/test", func(c *fiber.Ctx) error {
@@ -305,6 +475,7 @@ func main() {
 		}
 
 		listenerRegistry.AddWatch(identity.UserID, req.Mint)
+		portalTradeTracker.AddWatch(req.Mint)
 		tier := rpcManager.ChooseTierForToken(true)
 		rpcEndpoint, rpcErr := rpcManager.NextRPC(tier)
 		if rpcErr != nil {
@@ -340,6 +511,9 @@ func main() {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete listener"})
 		}
 		listenerRegistry.RemoveWatch(identity.UserID, req.Mint)
+		if !listenerRegistry.HasWatchers(req.Mint) {
+			portalTradeTracker.RemoveWatch(req.Mint)
+		}
 		return c.JSON(fiber.Map{"status": "removed", "userId": identity.UserID, "mint": req.Mint})
 	})
 
@@ -387,4 +561,128 @@ func telegramIdentityFromRequest(c *fiber.Ctx, verifier *auth.TelegramAuth) (aut
 	}
 
 	return auth.TelegramIdentity{}, errors.New("telegram init data missing")
+}
+
+func formatCompactRatioForAlert(value float64) string {
+	if value <= 0 {
+		return "--"
+	}
+	if value >= 1000 {
+		return fmt.Sprintf("%.0fx", value)
+	}
+	if value >= 100 {
+		return fmt.Sprintf("%.1fx", value)
+	}
+	return fmt.Sprintf("%.2fx", value)
+}
+
+func formatSpikeAlert(tokenLabel string, spike volume.SpikeResult, routeTier rpc.Tier, watched bool) string {
+	heading := "*Volume Spike*"
+	if watched {
+		heading = "*Watched Mint Triggered*"
+	}
+
+	routeLabel := fmt.Sprintf("%s flow", routeTier)
+	if watched && routeTier == rpc.TierA {
+		routeLabel = "Tier A watched flow"
+	}
+
+	lines := []string{
+		heading,
+		fmt.Sprintf("*Token:* %s", escapeTelegramMarkdown(tokenLabel)),
+		fmt.Sprintf("*Mint:* `%s`", escapeTelegramCode(spike.Mint)),
+		fmt.Sprintf("*Route:* %s", escapeTelegramMarkdown(routeLabel)),
+		fmt.Sprintf("*Burst:* %s vs baseline", formatCompactRatioForAlert(spike.Ratio)),
+		fmt.Sprintf("*5m Buy Volume:* %s SOL", formatCompactSOL(spike.WindowVolumeSOL)),
+		fmt.Sprintf("*5m Baseline:* %s SOL", formatCompactSOL(spike.BaselinePer5mSOL)),
+		fmt.Sprintf("*Excess Flow:* %s SOL", formatCompactSOL(maxFloat(spike.WindowVolumeSOL-spike.BaselinePer5mSOL, 0))),
+		fmt.Sprintf("*Wallets:* %d unique buyers", spike.UniqueWallets),
+	}
+
+	if spike.Name != "" {
+		lines = append(lines, fmt.Sprintf("*Name:* %s", escapeTelegramMarkdown(spike.Name)))
+	}
+	if spike.Symbol != "" {
+		lines = append(lines, fmt.Sprintf("*Symbol:* %s", escapeTelegramMarkdown(spike.Symbol)))
+	}
+
+	if spike.MarketCapSOL > 0 {
+		lines = append(lines, fmt.Sprintf("*Market Cap:* %s SOL", formatCompactSOL(spike.MarketCapSOL)))
+	}
+	if spike.TokenAgeSeconds > 0 {
+		lines = append(lines, fmt.Sprintf("*Token Age:* %s", escapeTelegramMarkdown(formatTokenAge(spike.TokenAgeSeconds))))
+	}
+	if spike.EntryGrade != "" {
+		lines = append(lines, fmt.Sprintf("*Entry Grade:* %s", escapeTelegramMarkdown(spike.EntryGrade)))
+	}
+	if spike.FloorConfidence > 0 {
+		lines = append(lines, fmt.Sprintf("*Floor Confidence:* %s", escapeTelegramMarkdown(formatPercent(spike.FloorConfidence))))
+	}
+	if !spike.DetectedAt.IsZero() {
+		lines = append(lines, fmt.Sprintf("*Detected:* %s UTC", escapeTelegramMarkdown(spike.DetectedAt.UTC().Format("15:04:05"))))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func formatCompactSOL(value float64) string {
+	if value <= 0 {
+		return "--"
+	}
+	if value >= 1000 {
+		return fmt.Sprintf("%.0f", value)
+	}
+	if value >= 100 {
+		return fmt.Sprintf("%.1f", value)
+	}
+	return fmt.Sprintf("%.2f", value)
+}
+
+func formatTokenAge(seconds int64) string {
+	if seconds <= 0 {
+		return "fresh"
+	}
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	if seconds < 3600 {
+		return fmt.Sprintf("%dm", seconds/60)
+	}
+	if seconds < 86400 {
+		return fmt.Sprintf("%dh %dm", seconds/3600, (seconds%3600)/60)
+	}
+	return fmt.Sprintf("%dd %dh", seconds/86400, (seconds%86400)/3600)
+}
+
+func formatPercent(value float64) string {
+	if value <= 1 {
+		value *= 100
+	}
+	if value >= 100 {
+		return fmt.Sprintf("%.0f%%", value)
+	}
+	return fmt.Sprintf("%.1f%%", value)
+}
+
+func escapeTelegramMarkdown(value string) string {
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		"_", "\\_",
+		"*", "\\*",
+		"[", "\\[",
+		"]", "\\]",
+		"`", "\\`",
+	)
+	return replacer.Replace(value)
+}
+
+func escapeTelegramCode(value string) string {
+	return strings.NewReplacer("`", "\\`").Replace(value)
+}
+
+func maxFloat(a float64, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
